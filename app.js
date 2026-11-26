@@ -5,6 +5,7 @@ import {
 import { analyzePicture, buildEdit, editAt } from './auto.js';
 import { decodeFull, enhance, swapSample, SyncPlayer } from './audio.js';
 import { transcribe, drawLyrics } from './lyrics.js';
+import { askClaude, parseLocal, getKey, setKey } from './prompt.js';
 
 const $ = (id) => document.getElementById(id);
 const S = {
@@ -15,6 +16,7 @@ const S = {
   autoOn: true, edl: null, correct: null, vtrack: null,
   raw: null, proc: null, clarity: true, reverb: 'oda', wet: 0.25, origAB: false,
   lyrics: [], lyrOn: true, lyrStyle: 'minimal',
+  sharpen: 0.4, pace: 'normal', close: 'normal', trim0: null, trim1: null, fadeIn: 0.45, fadeOut: 1.2,
 };
 
 /* ---------- GPU renderer: colour grade, zoom, flash ---------- */
@@ -25,12 +27,14 @@ const FS = `#version 300 es
 precision highp float;
 in vec2 v; out vec4 o;
 uniform sampler2D T; uniform vec2 C, R, P; uniform float Z, F, A, TM, D; uniform int L;
-uniform vec3 CG, LV;
+uniform vec3 CG, LV; uniform vec2 TX; uniform float SH;
 float h(vec2 q){ return fract(sin(dot(q, vec2(12.9898,78.233)))*43758.5453); }
 float lum(vec3 c){ return dot(c, vec3(.2126,.7152,.0722)); }
 void main(){
   vec2 of = (v-.5)*C/Z; vec2 q = vec2(P.x+of.x, P.y-of.y);
   vec3 c = texture(T,q).rgb;
+  vec3 bl = (texture(T,q+vec2(TX.x,0.)).rgb+texture(T,q-vec2(TX.x,0.)).rgb+texture(T,q+vec2(0.,TX.y)).rgb+texture(T,q-vec2(0.,TX.y)).rgb)*.25;
+  c = clamp(c + SH*(c-bl), 0., 1.);   // unsharp mask
   c = pow(clamp((c-LV.x)/(LV.y-LV.x),0.,1.), vec3(LV.z)) * CG;   // automatic exposure / white balance
   vec3 g = c;
   float vig = 0., grain = 0.;
@@ -73,14 +77,16 @@ class Renderer {
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
     const loc = gl.getAttribLocation(pr, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     this.tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, this.tex);
-    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
-    this.u = {}; for (const n of ['C', 'R', 'P', 'Z', 'F', 'A', 'TM', 'D', 'L', 'T', 'CG', 'LV']) this.u[n] = gl.getUniformLocation(pr, n);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    this.u = {}; for (const n of ['C', 'R', 'P', 'Z', 'F', 'A', 'TM', 'D', 'L', 'T', 'CG', 'LV', 'TX', 'SH']) this.u[n] = gl.getUniformLocation(pr, n);
   }
   draw(src, sw, sh, fx, t) {
     const { gl, u, cv } = this; const W = cv.width, H = cv.height;
     gl.viewport(0, 0, W, H);
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    gl.generateMipmap(gl.TEXTURE_2D);   // clean downscaling of 4K sources
+    gl.uniform2f(u.TX, 1 / sw, 1 / sh); gl.uniform1f(u.SH, S.sharpen * (0.6 + 0.5 * (fx.z - 1)) * Math.min(1, W / 1080 + 0.3));
     const as = sw / sh, ad = W / H, cx = as > ad ? ad / as : 1, cy = as > ad ? 1 : as / ad;
     gl.uniform2f(u.C, cx, cy);
     const hx = 0.5 * cx / fx.z, hy = 0.5 * cy / fx.z, cl = (x, h) => Math.min(1 - h, Math.max(h, x));
@@ -99,7 +105,7 @@ const lastLE = (a, t) => { let lo = 0, hi = a.length - 1, r = -1; while (lo <= h
 const energyAt = (t) => S.energy ? S.energy[Math.min(S.energy.length - 1, Math.max(0, Math.round(t * S.fps)))] : 0.7;
 const punch = (dt, decay) => dt < 0.025 ? dt / 0.025 : Math.exp(-(dt - 0.025) / decay);
 function fxAt(t) {
-  if (S.autoOn && S.edl) return editAt(S.edl, t, S.zoomOn ? S.power : 0, S.flashOn ? S.flash : 0);
+  if (S.autoOn && S.edl) return editAt(S.edl, t, S.zoomOn ? S.power : 0, S.flashOn ? S.flash : 0, win());
   let z = 1 + 0.025 * (S.dur ? Math.min(1, t / S.dur) : 0), f = 0;
   if (S.zoomOn && S.sel.length) {
     const i = lastLE(S.sel, t);
@@ -111,6 +117,9 @@ function fxAt(t) {
   }
   return { z, f };
 }
+// Mediabunny hands `process` timestamps relative to the trimmed output; add trim start back for effects.
+const TS_SHIFT = 1;
+const win = () => ({ t0: S.trim0 ?? 0, t1: S.trim1 ?? S.dur, fi: S.fadeIn, fo: S.fadeOut });
 function rebuildSel() {
   const { beats, barOff } = S;
   S.bars = beats.filter((_, i) => ((i - barOff) % 4 + 4) % 4 === 0);
@@ -208,6 +217,7 @@ function drawStrip() {
   }
   c.fillStyle = '#8a7c81'; for (const t of S.sel) c.fillRect(t / d * W, H * 0.55, dpr, H * 0.45);
   c.fillStyle = '#e0475e'; for (const t of S.bars) c.fillRect(t / d * W - dpr / 2, H * 0.2, 2 * dpr, H * 0.8);
+  c.fillStyle = 'rgba(0,0,0,.6)'; if (S.trim0) c.fillRect(0, 0, S.trim0 / d * W, H); if (S.trim1 != null) c.fillRect(S.trim1 / d * W, 0, W, H);
   const v = $('src'); c.fillStyle = '#fff'; c.fillRect(v.currentTime / d * W - dpr, 0, 2 * dpr, H);
 }
 new ResizeObserver(drawStrip).observe(strip);
@@ -218,6 +228,8 @@ strip.addEventListener('pointerdown', (e) => { const seek = (ev) => { const r = 
 const view = $('view'), src = $('src'); let preview = null;
 const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 const lyr = $('lyr'), lctx = lyr.getContext('2d');
+const fitRO = new ResizeObserver(() => { const w = Math.min(1080, Math.round(view.clientWidth * (devicePixelRatio || 1))); if (w > 0 && w !== view.width) { view.width = lyr.width = w; view.height = lyr.height = Math.round(w * 16 / 9); renderPreview(); } });
+fitRO.observe($('screen')); fitRO.observe(view);
 function renderPreview() {
   if (!preview || src.readyState < 2) return;
   preview.draw(src, src.videoWidth, src.videoHeight, fxAt(src.currentTime), src.currentTime);
@@ -229,7 +241,8 @@ const player = new SyncPlayer(src);
 function loop() { renderPreview(); if (S.playing) requestAnimationFrame(loop); }
 $('play').onclick = () => { src.play(); };
 view.onclick = () => { if (!src.paused) src.pause(); };
-src.onplay = () => { S.playing = true; $('play').hidden = true; player.start(); loop(); };
+src.ontimeupdate = () => { if (S.playing && S.trim1 != null && src.currentTime >= S.trim1) { src.pause(); src.currentTime = S.trim0 ?? 0; } };
+src.onplay = () => { if (S.trim0 != null && (src.currentTime < S.trim0 - 0.1 || (S.trim1 != null && src.currentTime >= S.trim1))) src.currentTime = S.trim0; S.playing = true; $('play').hidden = true; player.start(); loop(); };
 src.onpause = src.onended = () => { S.playing = false; $('play').hidden = false; player.stop(); renderPreview(); };
 src.onseeked = () => { if (S.playing) player.start(); renderPreview(); };
 src.onloadeddata = renderPreview;
@@ -238,7 +251,7 @@ src.onloadeddata = renderPreview;
 async function loadFile(file) {
   if (!file) return;
   resetResult(); S.file = file; S.beats = S.sel = S.bars = []; S.energy = null; S.edl = null; S.correct = null; $('autoOut').innerHTML = '';
-  S.raw = S.proc = null; S.lyrics = []; player.set(null, false); renderLyricList(); $('lyrGo').disabled = true; $('audioStatus').textContent = ''; $('err').hidden = true;
+  S.trim0 = S.trim1 = null; S.raw = S.proc = null; S.lyrics = []; player.set(null, false); renderLyricList(); $('lyrGo').disabled = true; $('audioStatus').textContent = ''; $('err').hidden = true;
   $('empty').hidden = true; view.hidden = false; strip.hidden = false; $('timebar').hidden = false; $('play').hidden = false; $('pInfo').hidden = false;
   if (src.src) URL.revokeObjectURL(src.src);
   src.src = URL.createObjectURL(file); src.load();
@@ -302,7 +315,7 @@ async function runAuto(musicOnly = false) {
     const audio = S.energy ? { energy: S.energy, fps: S.fps } : { energy: new Float32Array(Math.ceil(S.dur * 10)).fill(0.6), fps: 10 };
     const bpm = S.period ? 60 * S.fps / S.period : 0;
     S.correct = pic.correct;
-    S.edl = buildEdit({ dur: S.dur, beats: S.beats, barOff: S.barOff, audio, pic, bpm });
+    S.edl = buildEdit({ dur: S.dur, beats: S.beats, barOff: S.barOff, audio, pic, bpm, pace: S.pace, close: S.close, srcH: S.vtrack.displayHeight });
     if (!musicOnly) setLook(S.edl.look);
     showAuto(); drawStrip();
     if (src.currentTime < 0.6) src.currentTime = Math.min(1.5, S.dur / 3); else renderPreview();   // skip the fade-in black
@@ -351,18 +364,20 @@ async function runExport(small) {
     if (withLyr) { try { await Promise.all(['800 92px Archivo', '700 64px Inter', '600 54px Inter'].map((f) => document.fonts.load(f))); } catch {} }
     const outCanvas = (t) => { if (!withLyr) return cv; cctx.drawImage(cv, 0, 0); drawLyrics(cctx, t, 1080, 1920, S.lyrics, S.lyrStyle); return comp; };
     const proc = !small && S.proc ? S.proc : null;
+    const trim = !small && (S.trim0 != null || S.trim1 != null) ? { start: S.trim0 ?? 0, end: S.trim1 ?? S.dur } : null;
+    const tOff = trim ? TS_SHIFT * trim.start : 0;
     const vcodec = (await getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: 1080, height: 1920 })) || 'avc';
     const aac = await canEncodeAudio('aac');
     // Small copy: plain re-encode at 540x960, bitrate chosen so the file stays near 25 MB (under the 30 MB chat limit).
     const smallBits = Math.round(Math.min(3e6, Math.max(4e5, 25e6 * 8 / Math.max(1, S.dur) - 128000)));
     const video = small
       ? { width: 540, height: 960, fit: 'contain', frameRate: 30, codec: vcodec, bitrate: smallBits, forceTranscode: true }
-      : { frameRate: 30, codec: vcodec, quality: QUALITY_HIGH, forceTranscode: true, allowTransformationMetadata: false,
+      : { frameRate: 30, codec: vcodec, bitrate: 16e6, forceTranscode: true, allowTransformationMetadata: false,
           processedWidth: 1080, processedHeight: 1920,
-          process: (s) => { const vf = s.toVideoFrame(); try { rr.draw(vf, vf.displayWidth, vf.displayHeight, fxAt(s.timestamp), s.timestamp); } finally { vf.close(); } return outCanvas(s.timestamp); } };
+          process: (s) => { const t = s.timestamp + tOff; const vf = s.toVideoFrame(); try { rr.draw(vf, vf.displayWidth, vf.displayHeight, fxAt(t), t); } finally { vf.close(); } return outCanvas(t); } };
     const conv = S.conv = await Conversion.init({
-      input, output, video,
-      audio: { ...(aac ? { codec: 'aac', bitrate: small ? 128000 : 256000 } : {}), ...(proc ? { forceTranscode: true, process: (a) => swapSample(a, proc) } : {}) },
+      input, output, video, ...(trim ? { trim } : {}),
+      audio: { ...(aac ? { codec: 'aac', bitrate: small ? 128000 : 256000 } : {}), ...(proc ? { forceTranscode: true, process: (a) => swapSample(a, proc, tOff) } : {}) },
     });
     if (!conv.isValid) throw new Error('Bu video dönüştürülemiyor (' + conv.discardedTracks.map((d) => d.reason).join(', ') + ')');
     conv.onProgress = (p) => { const el = (performance.now() - t0) / 1000, eta = p > 0.03 ? el / p - el : 0;
@@ -439,3 +454,81 @@ $('lyrGo').onclick = async () => {
 $('lyrOn').onchange = (e) => { S.lyrOn = e.target.checked; renderPreview(); };
 $('lyrStyle').addEventListener('click', (e) => { const b = e.target.closest('[data-style]'); if (!b) return;
   for (const x of $('lyrStyle').querySelectorAll('[data-style]')) x.setAttribute('aria-pressed', String(x === b)); S.lyrStyle = b.dataset.style; renderPreview(); });
+
+/* ---------- sharpness ---------- */
+$('sharp').oninput = (e) => { S.sharpen = e.target.value / 100; $('sharpV').textContent = e.target.value; renderPreview(); };
+
+/* ---------- "Anlat, düzenlesin" ---------- */
+const lookName = ['dogal', 'rock', 'sinematik'];
+function currentSettings() {
+  return {
+    duration: +S.dur.toFixed(2), look: lookName[S.look], colorIntensity: Math.round(S.amt * 100), sharpen: Math.round(S.sharpen * 100),
+    cutSpeed: S.pace, closeups: S.close, zoomOn: S.zoomOn, zoomPower: Math.round(S.power * 100), flashOn: S.flashOn, flashPower: Math.round(S.flash * 100),
+    clarity: S.clarity, reverb: S.reverb, reverbAmount: Math.round(S.wet * 100), lyricsOn: S.lyrOn, lyricsStyle: S.lyrStyle,
+    trimStart: S.trim0, trimEnd: S.trim1, fadeIn: S.fadeIn, fadeOut: S.fadeOut,
+  };
+}
+function analysisContext() {
+  return {
+    ayarlar: currentSettings(),
+    tempoBPM: S.period ? Math.round(60 * S.fps / S.period) : null,
+    bolumler: S.edl ? S.edl.secs.map((s) => ({ ad: s.name, bas: +s.a.toFixed(1), son: +s.b.toFixed(1) })) : [],
+    yuzBulundu: S.edl ? S.edl.hasFace : null,
+    sarkiSozleri: S.lyrics.slice(0, 80).map((l) => ({ bas: l.a, son: l.b, metin: l.text })),
+  };
+}
+const clamp01 = (v) => Math.max(0, Math.min(100, Number(v))) / 100;
+function pressIn(box, attr, val) { for (const x of $(box).querySelectorAll('[' + attr + ']')) x.setAttribute('aria-pressed', String(x.getAttribute(attr) === String(val))); }
+function setRange(id, v100) { $(id).value = Math.round(v100); $(id + 'V').textContent = Math.round(v100); }
+async function applyPlan(p) {
+  const changed = []; let reEdit = false, reAudio = false;
+  const has = (k) => p[k] !== null && p[k] !== undefined;
+  if (has('look')) { setLook(lookName.indexOf(p.look)); changed.push('görünüm'); }
+  if (has('colorIntensity')) { S.amt = clamp01(p.colorIntensity); setRange('amt', S.amt * 100); changed.push('renk yoğunluğu'); }
+  if (has('sharpen')) { S.sharpen = clamp01(p.sharpen); setRange('sharp', S.sharpen * 100); changed.push('netlik'); }
+  if (has('cutSpeed')) { S.pace = p.cutSpeed; reEdit = true; changed.push('kesme hızı'); }
+  if (has('closeups')) { S.close = p.closeups; reEdit = true; changed.push('yakın planlar'); }
+  if (has('zoomOn')) { S.zoomOn = !!p.zoomOn; $('zoomOn').checked = S.zoomOn; changed.push('zoom'); }
+  if (has('zoomPower')) { S.power = clamp01(p.zoomPower); setRange('power', S.power * 100); }
+  if (has('flashOn')) { S.flashOn = !!p.flashOn; $('flashOn').checked = S.flashOn; changed.push('flaş'); }
+  if (has('flashPower')) { S.flash = clamp01(p.flashPower); setRange('flash', S.flash * 100); }
+  if (has('clarity')) { S.clarity = !!p.clarity; $('clarity').checked = S.clarity; reAudio = true; changed.push('vokal netliği'); }
+  if (has('reverb')) { S.reverb = p.reverb; pressIn('rev', 'data-rev', p.reverb); reAudio = true; changed.push('reverb'); }
+  if (has('reverbAmount')) { S.wet = clamp01(p.reverbAmount); setRange('wet', S.wet * 100); reAudio = true; changed.push('reverb miktarı'); }
+  if (has('lyricsOn')) { S.lyrOn = !!p.lyricsOn; $('lyrOn').checked = S.lyrOn; }
+  if (has('lyricsStyle')) { S.lyrStyle = p.lyricsStyle; pressIn('lyrStyle', 'data-style', p.lyricsStyle); changed.push('altyazı stili'); }
+  if (has('trimStart')) { S.trim0 = Math.max(0, Math.min(S.dur - 1, +p.trimStart)) || null; changed.push('başlangıç'); }
+  if (has('trimEnd')) { const e = Math.max(1, Math.min(S.dur, +p.trimEnd)); S.trim1 = e >= S.dur - 0.05 ? null : e; changed.push('bitiş'); }
+  if (S.trim0 != null && S.trim1 != null && S.trim1 <= S.trim0 + 1) S.trim1 = null;
+  if (has('fadeIn')) S.fadeIn = Math.max(0, Math.min(5, +p.fadeIn));
+  if (has('fadeOut')) S.fadeOut = Math.max(0, Math.min(8, +p.fadeOut));
+  $('trimInfo').textContent = S.trim0 != null || S.trim1 != null ? `Kesit: ${fmt(S.trim0 ?? 0)} – ${fmt(S.trim1 ?? S.dur)}` : '';
+  if (reEdit && S.autoOn) await runAuto(true);
+  if (reAudio) await applyAudio();
+  if (S.trim0 != null && (src.currentTime < S.trim0 || (S.trim1 != null && src.currentTime > S.trim1))) src.currentTime = S.trim0;
+  drawStrip(); renderPreview();
+  return changed;
+}
+function addMsg(who, text) { const d = document.createElement('div'); d.className = 'msg ' + who; d.textContent = text; $('chat').append(d); $('chat').scrollTop = 1e9; }
+async function sendPrompt() {
+  const text = $('ask').value.trim(); if (!text || !S.file) return;
+  $('ask').value = ''; addMsg('me', text); $('askGo').disabled = true;
+  const wait = document.createElement('div'); wait.className = 'msg bot muted'; wait.textContent = getKey() ? 'Claude düşünüyor…' : 'Yorumlanıyor…'; $('chat').append(wait);
+  try {
+    let plan;
+    if (getKey()) {
+      try { plan = await askClaude(text, analysisContext()); }
+      catch (e) { plan = parseLocal(text, currentSettings()); plan.reply = `Claude'a ulaşılamadı (${e.message}). Basit modla denedim: ` + plan.reply; }
+    } else plan = parseLocal(text, currentSettings());
+    const changed = await applyPlan(plan);
+    wait.remove(); addMsg('bot', (plan.reply || '') + (changed.length ? `\nDeğişenler: ${changed.join(', ')}.` : ''));
+  } catch (e) { wait.remove(); addMsg('bot', 'Bir hata oldu: ' + e.message); }
+  $('askGo').disabled = false;
+}
+$('askGo').onclick = sendPrompt;
+$('ask').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrompt(); } });
+$('resetTrim').onclick = () => { S.trim0 = S.trim1 = null; $('trimInfo').textContent = ''; drawStrip(); renderPreview(); };
+function showKeyState() { const k = getKey(); $('keyState').textContent = k ? 'Claude bağlı ✓' : 'Basit mod (anahtar yok)'; $('keyIn').value = ''; $('keyDel').hidden = !k; }
+$('keySave').onclick = () => { const v = $('keyIn').value.trim(); if (v) { setKey(v); showKeyState(); } };
+$('keyDel').onclick = () => { setKey(''); showKeyState(); };
+showKeyState();

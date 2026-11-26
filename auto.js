@@ -101,7 +101,7 @@ export function findSections(audio, beats, barOff, dur) {
 }
 
 /* ---------- edit decision list ---------- */
-export function buildEdit({ dur, beats, barOff, audio, pic, bpm }) {
+export function buildEdit({ dur, beats, barOff, audio, pic, bpm, pace = 'normal', close = 'normal', srcH = 1920 }) {
   let seed = 7; const rnd = () => (seed = seed * 16807 % 2147483647) / 2147483647;
   const { secs } = findSections(audio, beats, barOff, dur);
   const faceAt = (t) => { const f = pic.faces; if (!f.length) return { x: 0.5, y: 0.38, w: 0.22 }; let k = 0; while (k < f.length - 1 && f[k + 1].t <= t) k++; return f[k]; };
@@ -112,20 +112,25 @@ export function buildEdit({ dur, beats, barOff, audio, pic, bpm }) {
   const shots = [], punches = [], flashes = [];
   let prev = '';
   secs.forEach((sec, si) => {
-    const per = sec.level === 2 ? (barLen > 2.6 ? 1 : 2) : sec.level === 1 ? 2 : (barLen > 3 ? 2 : 4);
+    let per = sec.level === 2 ? (barLen > 2.6 ? 1 : 2) : sec.level === 1 ? 2 : (barLen > 3 ? 2 : 4);
+    if (pace === 'hizli') per = Math.max(1, per / 2); else if (pace === 'yavas') per *= 2;
     const cuts = sec.bars.filter((_, i) => i % per === 0);
     cuts.forEach((a, ci) => {
       const b = cuts[ci + 1] ?? sec.b;
       if (b - a < 1.2 && shots.length) { shots.at(-1).b = b; return; }
       let opts = sec.level === 2 ? ['C', 'M', 'C', 'W'] : sec.level === 1 ? ['M', 'W', 'C', 'M'] : ['W', 'M', 'W'];
+      if (close === 'cok') opts = opts.map((o) => (o === 'W' ? 'C' : o)).concat(['C']);
+      if (close === 'az') opts = opts.map((o) => (o === 'C' ? 'M' : o)).concat(['W']);
       if (!hasFace) opts = opts.map((o) => (o === 'C' ? 'M' : o));
       let kind = si === 0 && ci === 0 ? 'W' : ci === 0 && sec.level === 2 && hasFace ? 'C' : opts[Math.floor(rnd() * opts.length)];
       if (kind === prev) kind = opts.find((o) => o !== prev) || 'W';
       if (si === secs.length - 1 && ci === cuts.length - 1) kind = 'W';
       prev = kind;
       const f = avgFace(a, b);
-      const zc = Math.min(2.1, Math.max(1.45, 0.34 / Math.max(0.05, f.w)));
-      const z = kind === 'W' ? 1 : kind === 'M' ? 1.28 : zc;
+      // close-up zoom limited by source resolution so the picture stays sharp (1080p: ~1.55x, 4K: up to 2.1x)
+      const zMax = Math.max(1.3, Math.min(2.1, 1.55 * srcH / 1920));
+      const zc = Math.min(zMax, Math.max(1.3, 0.34 / Math.max(0.05, f.w)));
+      const z = kind === 'W' ? 1 : kind === 'M' ? Math.min(1.28, 1 + (zc - 1) * 0.55) : zc;
       const wgt = kind === 'W' ? 0 : kind === 'M' ? 0.7 : 1;
       const drift = sec.level === 0 ? 0.07 : sec.level === 1 ? 0.04 : 0.02;
       const last = si === secs.length - 1 && ci === cuts.length - 1;
@@ -147,7 +152,7 @@ const lastLE = (a, t, key) => { let lo = 0, hi = a.length - 1, r = -1; while (lo
 const env = (dt, decay) => dt < 0 ? 0 : dt < 0.025 ? dt / 0.025 : Math.exp(-(dt - 0.025) / decay);
 
 // Effect state at time t for an edit; power and flash scale the beat effects (sliders), 0 disables.
-export function editAt(E, t, power, flash) {
+export function editAt(E, t, power, flash, win = { t0: 0, t1: E.dur, fi: E.fadeIn, fo: E.fadeOut }) {
   const i = Math.max(0, lastLE(E.shots, t, 'a')), s = E.shots[i];
   const u = Math.min(1, Math.max(0, (t - s.a) / Math.max(0.1, s.b - s.a)));
   let z = s.z * (1 + s.drift * u);
@@ -155,6 +160,6 @@ export function editAt(E, t, power, flash) {
   if (pi >= 0 && power) z *= 1 + power * 0.13 * E.punches[pi].s * env(t - E.punches[pi].t, 0.15);
   let f = 0; const fi = lastLE(E.flashes, t, 't');
   if (fi >= 0 && flash) f = flash * 1.6 * E.flashes[fi].s * env(t - E.flashes[fi].t, 0.1);
-  const fade = Math.min(1, t / E.fadeIn, (E.dur - t) / E.fadeOut);
+  const fade = Math.min(1, win.fi > 0 ? (t - win.t0) / win.fi : 1, win.fo > 0 ? (win.t1 - t) / win.fo : 1);
   return { z, f, cx: s.cx, cy: s.cy, fade: Math.max(0, fade), kind: s.kind };
 }

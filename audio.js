@@ -84,9 +84,9 @@ function normalize(b) {
 }
 
 // Replace an incoming encoder sample with the processed audio at the same timestamp.
-export function swapSample(sample, buf) {
+export function swapSample(sample, buf, offset = 0) {
   const n = sample.numberOfFrames, ch = sample.numberOfChannels, sr = sample.sampleRate, r = buf.sampleRate / sr;
-  const data = new Float32Array(n * ch), start = sample.timestamp * buf.sampleRate;
+  const data = new Float32Array(n * ch), start = (sample.timestamp + offset) * buf.sampleRate;
   for (let c = 0; c < ch; c++) {
     const d = buf.getChannelData(Math.min(c, 1)), o = c * n;
     for (let i = 0; i < n; i++) { const k = Math.round(start + i * r); data[o + i] = k >= 0 && k < d.length ? d[k] : 0; }

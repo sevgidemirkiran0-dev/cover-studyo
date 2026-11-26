@@ -66,7 +66,15 @@ input[type=range]{width:100%;accent-color:var(--red);height:32px}
 .tempo b{font:800 30px/1 Archivo,sans-serif;font-variant-numeric:tabular-nums}
 .small{min-height:36px;padding:4px 12px;font-size:14px}
 .auto{border-color:var(--red)}
-.screen canvas#lyr{z-index:1}
+.ask{border-color:#ffd23f}
+.chat{display:flex;flex-direction:column;gap:8px;max-height:260px;overflow-y:auto;margin-bottom:10px}
+.msg{padding:10px 12px;border-radius:12px;font-size:15px;white-space:pre-wrap;max-width:92%}
+.msg.bot{background:#2a2225;align-self:flex-start}
+.msg.me{background:var(--red);color:#fff;align-self:flex-end}
+.askrow{display:grid;grid-template-columns:minmax(0,1fr) max-content;gap:8px;align-items:end}
+.askrow textarea,#keyIn{font:16px Inter,sans-serif;padding:10px;border-radius:10px;border:2px solid var(--line);background:#181315;color:var(--ink);resize:vertical;width:100%;min-height:44px}
+summary{cursor:pointer;min-height:32px}
+.screen canvas#lyr{z-index:1;background:transparent}
 select{font:16px Inter,sans-serif;min-height:44px;padding:8px 10px;border-radius:10px;border:2px solid var(--line);background:#181315;color:var(--ink)}
 .lyrlist{display:flex;flex-direction:column;gap:6px;margin-top:12px;max-height:420px;overflow-y:auto}
 .lrow{display:grid;grid-template-columns:max-content minmax(0,1fr) max-content;gap:6px;align-items:center}
@@ -100,6 +108,17 @@ select{font:16px Inter,sans-serif;min-height:44px;padding:8px 10px;border-radius
       <dl class="kv" id="info" style="margin-top:10px"></dl>
     </div>
 
+    <div class="panel ask">
+      <h2>Anlat, düzenlesin</h2>
+      <div class="chat" id="chat"><div class="msg bot">Ne istediğini yaz, kurguyu ona göre değiştireyim. Örnek: "Nakaratta daha hızlı kes ve yüzüme daha çok yakın plan yap", "Sinematik olsun, reverbi biraz artır", "İlk 4 saniyeyi at, sözler büyük çıksın".</div></div>
+      <div class="askrow"><textarea id="ask" rows="2" placeholder="Örn: Daha karanlık ve sinematik olsun, nakarata girerken flaş patlasın"></textarea><button id="askGo">Uygula</button></div>
+      <div class="row" style="margin-top:8px;justify-content:space-between"><span class="muted" id="trimInfo"></span><button class="ghost small" id="resetTrim">Kesiti sıfırla</button></div>
+      <details style="margin-top:8px"><summary class="muted">Claude bağlantısı: <span id="keyState"></span></summary>
+        <p class="muted" style="margin-top:8px">Anahtar olmadan basit kelime tanıma ile çalışır. Serbest anlatım için Claude API anahtarını gir (console.anthropic.com → API Keys). Anahtar yalnızca bu iPad'de saklanır ve yalnızca Anthropic'e gönderilir. Kullanım API hesabından ücretlendirilir.</p>
+        <div class="row"><input type="password" id="keyIn" placeholder="sk-ant-..." autocomplete="off" style="flex:1;min-width:180px"><button class="small" id="keySave">Kaydet</button><button class="ghost small" id="keyDel" hidden>Sil</button></div>
+      </details>
+    </div>
+
     <div class="panel auto">
       <div class="row" style="justify-content:space-between"><h2 style="margin:0">Otomatik kurgu</h2><input type="checkbox" id="autoOn" checked aria-label="Otomatik kurguyu aç/kapat" style="width:24px;height:24px;accent-color:var(--red)"></div>
       <p style="margin-top:8px" id="autoStatus">Video seçince tamamı analiz edilir: şarkının bölümleri, yüzün yeri, ışık ve renk. Ardından kamera açıları, zoom, flaş ve geçişler otomatik kurgulanır.</p>
@@ -115,6 +134,7 @@ select{font:16px Inter,sans-serif;min-height:44px;padding:8px 10px;border-radius
         <button class="look" data-look="2" aria-pressed="false"><i style="background:linear-gradient(135deg,#0d3b47,#2c6e74 45%,#e39a5c)"></i>Sinematik</button>
       </div>
       <label class="rng">Yoğunluk<input type="range" id="amt" min="0" max="100" value="80"><output id="amtV">80</output></label>
+      <label class="rng">Netlik<input type="range" id="sharp" min="0" max="100" value="40"><output id="sharpV">40</output></label>
     </div>
 
     <div class="panel">
@@ -168,7 +188,7 @@ select{font:16px Inter,sans-serif;min-height:44px;padding:8px 10px;border-radius
 
     <div class="panel">
       <h2>Dışa aktar</h2>
-      <p>1080×1920, 30 kare/sn, H.264 + AAC. Render sırasında Safari'yi açık tut ve ekranı kilitleme.</p>
+      <p>1080×1920, 30 kare/sn, yüksek kalite (16 Mbps) H.264 + AAC. Render sırasında Safari'yi açık tut ve ekranı kilitleme.</p>
       <button class="big" id="go" disabled>Reels videosunu oluştur</button>
       <div id="progBox" hidden>
         <div class="prog"><i id="progI"></i></div>
