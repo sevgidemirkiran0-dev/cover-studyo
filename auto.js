@@ -29,14 +29,14 @@ export async function analyzePicture(track, dur, onProgress) {
   for (let t = 0.05; t < dur; t += step) times.push(t);
   const scratch = document.createElement('canvas'); scratch.width = 64; scratch.height = Math.max(1, Math.round(64 * th / tw));
   const sx = scratch.getContext('2d', { willReadFrequently: true });
-  const samples = [], hist = new Float64Array(64); let sr = 0, sg = 0, sb = 0, n = 0, i = 0;
+  const samples = [], hist = new Float64Array(64); let sr = 0, sg = 0, sb = 0, n = 0, i = 0, qr = 0, qg = 0, qb = 0;
   for await (const wc of sink.canvasesAtTimestamps(times)) {
     const t = times[i++]; onProgress?.(i / times.length);
     if (!wc) continue;
     sx.drawImage(wc.canvas, 0, 0, scratch.width, scratch.height);
     const px = sx.getImageData(0, 0, scratch.width, scratch.height).data;
     for (let k = 0; k < px.length; k += 4) { const r = px[k] / 255, g = px[k + 1] / 255, b = px[k + 2] / 255;
-      sr += r; sg += g; sb += b; n++; hist[Math.min(63, Math.floor((0.2126 * r + 0.7152 * g + 0.0722 * b) * 64))]++; }
+      sr += r; sg += g; sb += b; qr += r * r; qg += g * g; qb += b * b; n++; hist[Math.min(63, Math.floor((0.2126 * r + 0.7152 * g + 0.0722 * b) * 64))]++; }
     let face = null;
     if (det) {
       try {
@@ -68,7 +68,9 @@ export async function analyzePicture(track, dur, onProgress) {
   const W = 3, track2 = raw.map((_, k) => { let x = 0, y = 0, w = 0, c = 0;
     for (let j = Math.max(0, k - W); j <= Math.min(raw.length - 1, k + W); j++) { x += raw[j].x; y += raw[j].y; w += raw[j].w; c++; }
     return { t: samples[k].t, x: x / c, y: y / c, w: w / c }; });
-  return { faces: track2, faceRate, correct, aspect: dw / dh };
+  const sdv = (q, m) => Math.sqrt(Math.max(1e-4, q / n - m * m));
+  const stats = { mu: [mr, mg, mb], sd: [sdv(qr, mr), sdv(qg, mg), sdv(qb, mb)] };
+  return { faces: track2, faceRate, correct, stats, aspect: dw / dh };
 }
 
 /* ---------- music structure ---------- */
@@ -101,7 +103,7 @@ export function findSections(audio, beats, barOff, dur) {
 }
 
 /* ---------- edit decision list ---------- */
-export function buildEdit({ dur, beats, barOff, audio, pic, bpm, pace = 'normal', close = 'normal', srcH = 1920 }) {
+export function buildEdit({ dur, beats, barOff, audio, pic, bpm, pace = 'normal', close = 'normal', srcH = 1920, targetShot = null }) {
   let seed = 7; const rnd = () => (seed = seed * 16807 % 2147483647) / 2147483647;
   const { secs } = findSections(audio, beats, barOff, dur);
   const faceAt = (t) => { const f = pic.faces; if (!f.length) return { x: 0.5, y: 0.38, w: 0.22 }; let k = 0; while (k < f.length - 1 && f[k + 1].t <= t) k++; return f[k]; };
@@ -114,10 +116,17 @@ export function buildEdit({ dur, beats, barOff, audio, pic, bpm, pace = 'normal'
   secs.forEach((sec, si) => {
     let per = sec.level === 2 ? (barLen > 2.6 ? 1 : 2) : sec.level === 1 ? 2 : (barLen > 3 ? 2 : 4);
     if (pace === 'hizli') per = Math.max(1, per / 2); else if (pace === 'yavas') per *= 2;
-    const cuts = sec.bars.filter((_, i) => i % per === 0);
+    let cuts = sec.bars.filter((_, i) => i % per === 0);
+    if (targetShot) {   // copy a reference video's cutting rhythm: cut every k beats, slower in quiet parts
+      const beatLen = barLen / 4, mult = sec.level === 2 ? 1 : sec.level === 1 ? 1.4 : 2;
+      const k = Math.max(1, Math.round(targetShot * mult / beatLen));
+      const bts = beats.filter((t) => t >= sec.a - 0.01 && t < sec.b - 0.3);
+      cuts = bts.length ? bts.filter((_, i) => i % k === 0) : cuts;
+      if (!cuts.length || cuts[0] > sec.a + 0.05) cuts.unshift(sec.a);
+    }
     cuts.forEach((a, ci) => {
       const b = cuts[ci + 1] ?? sec.b;
-      if (b - a < 1.2 && shots.length) { shots.at(-1).b = b; return; }
+      if (b - a < (targetShot ? Math.min(1.2, targetShot * 0.6) : 1.2) && shots.length) { shots.at(-1).b = b; return; }
       let opts = sec.level === 2 ? ['C', 'M', 'C', 'W'] : sec.level === 1 ? ['M', 'W', 'C', 'M'] : ['W', 'M', 'W'];
       if (close === 'cok') opts = opts.map((o) => (o === 'W' ? 'C' : o)).concat(['C']);
       if (close === 'az') opts = opts.map((o) => (o === 'C' ? 'M' : o)).concat(['W']);
@@ -157,9 +166,14 @@ export function editAt(E, t, power, flash, win = { t0: 0, t1: E.dur, fi: E.fadeI
   const u = Math.min(1, Math.max(0, (t - s.a) / Math.max(0.1, s.b - s.a)));
   let z = s.z * (1 + s.drift * u);
   const pi = lastLE(E.punches, t, 't');
-  if (pi >= 0 && power) z *= 1 + power * 0.13 * E.punches[pi].s * env(t - E.punches[pi].t, 0.15);
+  const pe = pi >= 0 ? E.punches[pi].s * env(t - E.punches[pi].t, 0.15) : 0;
+  if (power) z *= 1 + power * 0.13 * pe;
+  // transition window around cuts (0..1, peaks at the cut); dir: which way a whip moves
+  let ta = 0, dir = 1; const W = 0.2;
+  if (i > 0 && t - s.a < W) { ta = 1 - (t - s.a) / W; dir = -1; }
+  const nx = E.shots[i + 1]; if (nx && nx.a - t < W) { const a2 = 1 - (nx.a - t) / W; if (a2 > ta) { ta = a2; dir = 1; } }
   let f = 0; const fi = lastLE(E.flashes, t, 't');
   if (fi >= 0 && flash) f = flash * 1.6 * E.flashes[fi].s * env(t - E.flashes[fi].t, 0.1);
   const fade = Math.min(1, win.fi > 0 ? (t - win.t0) / win.fi : 1, win.fo > 0 ? (win.t1 - t) / win.fo : 1);
-  return { z, f, cx: s.cx, cy: s.cy, fade: Math.max(0, fade), kind: s.kind };
+  return { z, f, cx: s.cx, cy: s.cy, fade: Math.max(0, fade), kind: s.kind, pe: Math.min(1, pe), ta, dir };
 }

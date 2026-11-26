@@ -6,6 +6,7 @@ import { analyzePicture, buildEdit, editAt } from './auto.js';
 import { decodeFull, enhance, swapSample, SyncPlayer } from './audio.js';
 import { transcribe, drawLyrics } from './lyrics.js';
 import { askClaude, parseLocal, getKey, setKey } from './prompt.js';
+import { analyzeReference, styleToSettings } from './refstyle.js';
 
 const $ = (id) => document.getElementById(id);
 const S = {
@@ -17,6 +18,8 @@ const S = {
   raw: null, proc: null, clarity: true, reverb: 'oda', wet: 0.25, origAB: false,
   lyrics: [], lyrOn: true, lyrStyle: 'minimal',
   sharpen: 0.4, pace: 'normal', close: 'normal', trim0: null, trim1: null, fadeIn: 0.45, fadeOut: 1.2,
+  fx: { shake: false, rgb: false, glow: false, leak: false, vhs: false, letterbox: false, beauty: false }, fxPower: 0.5, trans: 'kesme',
+  ref: null, refOn: false, refAmt: 0.8, targetShot: null,
 };
 
 /* ---------- GPU renderer: colour grade, zoom, flash ---------- */
@@ -28,14 +31,37 @@ precision highp float;
 in vec2 v; out vec4 o;
 uniform sampler2D T; uniform vec2 C, R, P; uniform float Z, F, A, TM, D; uniform int L;
 uniform vec3 CG, LV; uniform vec2 TX; uniform float SH;
+// CapCut-style effects
+uniform vec2 SO; uniform float SR, RGB, GL, GLOD, LK, LKT, VH, LB, BEA; uniform int TR; uniform float TA; uniform vec2 TD;
+// reference colour transfer
+uniform vec3 XM, XS, UM, US; uniform float XA;
 float h(vec2 q){ return fract(sin(dot(q, vec2(12.9898,78.233)))*43758.5453); }
 float lum(vec3 c){ return dot(c, vec3(.2126,.7152,.0722)); }
+vec3 tap(vec2 q){ return texture(T,q).rgb; }
 void main(){
-  vec2 of = (v-.5)*C/Z; vec2 q = vec2(P.x+of.x, P.y-of.y);
-  vec3 c = texture(T,q).rgb;
-  vec3 bl = (texture(T,q+vec2(TX.x,0.)).rgb+texture(T,q-vec2(TX.x,0.)).rgb+texture(T,q+vec2(0.,TX.y)).rgb+texture(T,q-vec2(0.,TX.y)).rgb)*.25;
-  c = clamp(c + SH*(c-bl), 0., 1.);   // unsharp mask
-  c = pow(clamp((c-LV.x)/(LV.y-LV.x),0.,1.), vec3(LV.z)) * CG;   // automatic exposure / white balance
+  vec2 of = (v-.5)*C/Z;
+  float cs = cos(SR), sn = sin(SR); of = vec2(cs*of.x - sn*of.y, sn*of.x + cs*of.y);   // shake rotation
+  vec2 q = vec2(P.x+of.x, P.y-of.y) + SO;
+  if (TR==1) q = P + (q-P)/(1.+.35*TA);                                                 // zoom transition push
+  vec3 c;
+  if (TR>=1 && TR<=2 && TA>.01) {                                                       // zoom / whip motion blur
+    vec2 dir = TR==1 ? (q-P)*.18*TA : TD*.22*TA; c = vec3(0.);
+    for (int i=0;i<10;i++){ c += tap(clamp(q + dir*(float(i)/9.-.5), 0., 1.)); } c /= 10.;
+  } else {
+    c = tap(q);
+    vec3 bl = (tap(q+vec2(TX.x,0.))+tap(q-vec2(TX.x,0.))+tap(q+vec2(0.,TX.y))+tap(q-vec2(0.,TX.y)))*.25;
+    c = clamp(c + SH*(c-bl), 0., 1.);                                                   // unsharp mask
+  }
+  float rgb = RGB + (TR==3 ? .02*TA : 0.);
+  if (TR==3 && TA>.01) { float band = floor(v.y*18.+TM); if (h(vec2(band,TM))>.6) q.x += (h(vec2(TM,band))-.5)*.08*TA; }
+  if (rgb>0.) { c.r = tap(q+vec2(rgb,0.)).r; c.b = tap(q-vec2(rgb,0.)).b; }
+  if (BEA>0.) {                                                                          // skin smoothing
+    float cb = -.169*c.r-.331*c.g+.5*c.b, cr = .5*c.r-.419*c.g-.081*c.b;
+    float skin = smoothstep(.02,.06,cr)*(1.-smoothstep(.17,.22,cr))*(1.-smoothstep(-.02,.04,cb));
+    c = mix(c, textureLod(T,q,1.6).rgb, BEA*skin);
+  }
+  if (XA>0.) c = mix(c, clamp((c-UM)/max(US,vec3(.02))*XS+XM, 0., 1.), XA);             // match reference colours
+  else c = pow(clamp((c-LV.x)/(LV.y-LV.x),0.,1.), vec3(LV.z)) * CG;                     // automatic exposure / white balance
   vec3 g = c;
   float vig = 0., grain = 0.;
   if (L==1) {            // Alternatif Rock
@@ -59,7 +85,19 @@ void main(){
   g *= 1.-vig*smoothstep(.25,.85,length(d));
   g += (h(floor(v*R)+TM)-.5)*grain;
   g = mix(c, g, A);
-  g += F*vec3(1.,.93,.85)*.45;
+  if (GL>0.) { vec3 bb = textureLod(T,q,GLOD).rgb; g += max(bb-.55,0.)*GL*2.2; }         // glow / bloom
+  if (LK>0.) {                                                                           // drifting light leak
+    vec2 lp = vec2(.15+.25*sin(LKT*.37), .2+.3*sin(LKT*.23+1.));
+    float k1 = exp(-6.*dot(v-lp,v-lp)), k2 = exp(-9.*dot(v-vec2(.9,.85+.1*sin(LKT*.5)),v-vec2(.9,.85+.1*sin(LKT*.5))));
+    g = 1.-(1.-g)*(1.-LK*(k1*vec3(1.,.45,.15)+k2*vec3(1.,.2,.35)));
+  }
+  if (VH>0.) {                                                                           // VHS
+    g = mix(g, vec3(lum(g))*vec3(1.05,1.,.92)+.03, .25*VH);
+    g *= 1.-.12*VH*(.5+.5*sin(v.y*R.y*3.1416));
+    g += (h(vec2(floor(v.y*R.y*.5),TM))-.5)*.05*VH;
+  }
+  g += F*vec3(1.,.93,.85)*.45 + (TR==4 ? TA*.8 : 0.);
+  if (LB>0. && abs(v.y-.5)>.5-LB) g = vec3(0.);                                          // cinema bars
   o = vec4(clamp(g,0.,1.)*D,1.);
 }`;
 
@@ -78,7 +116,7 @@ class Renderer {
     const loc = gl.getAttribLocation(pr, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     this.tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, this.tex);
     for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
-    this.u = {}; for (const n of ['C', 'R', 'P', 'Z', 'F', 'A', 'TM', 'D', 'L', 'T', 'CG', 'LV', 'TX', 'SH']) this.u[n] = gl.getUniformLocation(pr, n);
+    this.u = {}; for (const n of ['C', 'R', 'P', 'Z', 'F', 'A', 'TM', 'D', 'L', 'T', 'CG', 'LV', 'TX', 'SH', 'SO', 'SR', 'RGB', 'GL', 'GLOD', 'LK', 'LKT', 'VH', 'LB', 'BEA', 'TR', 'TA', 'TD', 'XM', 'XS', 'UM', 'US', 'XA']) this.u[n] = gl.getUniformLocation(pr, n);
   }
   draw(src, sw, sh, fx, t) {
     const { gl, u, cv } = this; const W = cv.width, H = cv.height;
@@ -96,6 +134,13 @@ class Renderer {
     gl.uniform2f(u.R, W / 2, H / 2);
     gl.uniform1f(u.Z, fx.z); gl.uniform1f(u.F, fx.f); gl.uniform1f(u.A, S.look ? S.amt : 0);
     gl.uniform1f(u.TM, Math.floor(t * 24) % 97); gl.uniform1i(u.L, S.look); gl.uniform1i(u.T, 0);
+    const e = fx.e || {}, X = S.ref && S.refOn && pic ? S.ref.color : null, Ux = pic?.stats;
+    gl.uniform2f(u.SO, e.sx || 0, e.sy || 0); gl.uniform1f(u.SR, e.sr || 0); gl.uniform1f(u.RGB, e.rgb || 0);
+    gl.uniform1f(u.GL, e.glow || 0); gl.uniform1f(u.GLOD, Math.log2(Math.max(sw, sh) / 48)); gl.uniform1f(u.LK, e.leak || 0); gl.uniform1f(u.LKT, t);
+    gl.uniform1f(u.VH, e.vhs || 0); gl.uniform1f(u.LB, e.lb || 0); gl.uniform1f(u.BEA, e.beauty || 0);
+    gl.uniform1i(u.TR, e.tr || 0); gl.uniform1f(u.TA, e.ta || 0); gl.uniform2f(u.TD, e.td || 0, 0);
+    gl.uniform1f(u.XA, X && Ux ? S.refAmt : 0);
+    if (X && Ux) { gl.uniform3f(u.XM, ...X.mu); gl.uniform3f(u.XS, ...X.sd); gl.uniform3f(u.UM, ...Ux.mu); gl.uniform3f(u.US, ...Ux.sd); }
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 }
@@ -104,18 +149,32 @@ class Renderer {
 const lastLE = (a, t) => { let lo = 0, hi = a.length - 1, r = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (a[m] <= t) { r = m; lo = m + 1; } else hi = m - 1; } return r; };
 const energyAt = (t) => S.energy ? S.energy[Math.min(S.energy.length - 1, Math.max(0, Math.round(t * S.fps)))] : 0.7;
 const punch = (dt, decay) => dt < 0.025 ? dt / 0.025 : Math.exp(-(dt - 0.025) / decay);
+const TRANS = { kesme: 0, zoom: 1, kaydir: 2, glitch: 3, flas: 4 };
+const noise = (x) => Math.sin(x * 12.9898) * 0.5 + Math.sin(x * 7.233 + 1.7) * 0.3 + Math.sin(x * 3.11 + 4.2) * 0.2;
 function fxAt(t) {
+  const base = baseFx(t), F = S.fx, k = S.fxPower, pe = base.pe || 0, e = {};
+  if (F.shake) { const a = (0.0025 + 0.012 * pe) * k * 1.6; e.sx = a * noise(t * 31); e.sy = a * noise(t * 29 + 5); e.sr = a * 0.6 * noise(t * 23 + 9); }
+  if (F.rgb) e.rgb = (0.0015 + 0.006 * pe) * k * 1.6;
+  if (F.glow) e.glow = 0.5 * k + 0.2;
+  if (F.leak) e.leak = 0.35 * k + 0.15;
+  if (F.vhs) e.vhs = 0.6 * k + 0.4;
+  if (F.letterbox) e.lb = 0.1;
+  if (F.beauty) e.beauty = 0.35 + 0.4 * k;
+  if (base.ta > 0 && S.trans !== 'kesme') { e.tr = TRANS[S.trans]; e.ta = base.ta * (0.6 + 0.6 * k); e.td = base.dir || 1; }
+  base.e = e; return base;
+}
+function baseFx(t) {
   if (S.autoOn && S.edl) return editAt(S.edl, t, S.zoomOn ? S.power : 0, S.flashOn ? S.flash : 0, win());
-  let z = 1 + 0.025 * (S.dur ? Math.min(1, t / S.dur) : 0), f = 0;
+  let z = 1 + 0.025 * (S.dur ? Math.min(1, t / S.dur) : 0), f = 0, pe = 0;
   if (S.zoomOn && S.sel.length) {
     const i = lastLE(S.sel, t);
-    if (i >= 0) z += S.power * 0.14 * punch(t - S.sel[i], 0.16) * (0.45 + 0.55 * energyAt(S.sel[i]));
+    if (i >= 0) { pe = punch(t - S.sel[i], 0.16) * (0.45 + 0.55 * energyAt(S.sel[i])); z += S.power * 0.14 * pe; }
   }
   if (S.flashOn && S.bars.length) {
     const i = lastLE(S.bars, t);
     if (i >= 0) { const e = energyAt(S.bars[i]); f = S.flash * punch(t - S.bars[i], 0.09) * e * e; }
   }
-  return { z, f };
+  return { z, f, pe };
 }
 // Mediabunny hands `process` timestamps relative to the trimmed output; add trim start back for effects.
 const TS_SHIFT = 1;
@@ -315,7 +374,7 @@ async function runAuto(musicOnly = false) {
     const audio = S.energy ? { energy: S.energy, fps: S.fps } : { energy: new Float32Array(Math.ceil(S.dur * 10)).fill(0.6), fps: 10 };
     const bpm = S.period ? 60 * S.fps / S.period : 0;
     S.correct = pic.correct;
-    S.edl = buildEdit({ dur: S.dur, beats: S.beats, barOff: S.barOff, audio, pic, bpm, pace: S.pace, close: S.close, srcH: S.vtrack.displayHeight });
+    S.edl = buildEdit({ dur: S.dur, beats: S.beats, barOff: S.barOff, audio, pic, bpm, pace: S.pace, close: S.close, srcH: S.vtrack.displayHeight, targetShot: S.refOn ? S.targetShot : null });
     if (!musicOnly) setLook(S.edl.look);
     showAuto(); drawStrip();
     if (src.currentTime < 0.6) src.currentTime = Math.min(1.5, S.dur / 3); else renderPreview();   // skip the fade-in black
@@ -465,7 +524,7 @@ function currentSettings() {
     duration: +S.dur.toFixed(2), look: lookName[S.look], colorIntensity: Math.round(S.amt * 100), sharpen: Math.round(S.sharpen * 100),
     cutSpeed: S.pace, closeups: S.close, zoomOn: S.zoomOn, zoomPower: Math.round(S.power * 100), flashOn: S.flashOn, flashPower: Math.round(S.flash * 100),
     clarity: S.clarity, reverb: S.reverb, reverbAmount: Math.round(S.wet * 100), lyricsOn: S.lyrOn, lyricsStyle: S.lyrStyle,
-    trimStart: S.trim0, trimEnd: S.trim1, fadeIn: S.fadeIn, fadeOut: S.fadeOut,
+    trimStart: S.trim0, trimEnd: S.trim1, fadeIn: S.fadeIn, fadeOut: S.fadeOut, fxPower: Math.round(S.fxPower * 100),
   };
 }
 function analysisContext() {
@@ -497,6 +556,9 @@ async function applyPlan(p) {
   if (has('reverbAmount')) { S.wet = clamp01(p.reverbAmount); setRange('wet', S.wet * 100); reAudio = true; changed.push('reverb miktarı'); }
   if (has('lyricsOn')) { S.lyrOn = !!p.lyricsOn; $('lyrOn').checked = S.lyrOn; }
   if (has('lyricsStyle')) { S.lyrStyle = p.lyricsStyle; pressIn('lyrStyle', 'data-style', p.lyricsStyle); changed.push('altyazı stili'); }
+  if (has('fx')) { for (const [k, v] of Object.entries(p.fx)) { S.fx[k] = !!v; $('fxChips').querySelector(`[data-fx=${k}]`)?.setAttribute('aria-pressed', String(!!v)); } changed.push('efektler'); }
+  if (has('trans')) { S.trans = p.trans; pressIn('transChips', 'data-trans', p.trans); changed.push('geçiş'); }
+  if (has('fxPower')) { S.fxPower = clamp01(p.fxPower); setRange('fxPower', S.fxPower * 100); }
   if (has('trimStart')) { S.trim0 = Math.max(0, Math.min(S.dur - 1, +p.trimStart)) || null; changed.push('başlangıç'); }
   if (has('trimEnd')) { const e = Math.max(1, Math.min(S.dur, +p.trimEnd)); S.trim1 = e >= S.dur - 0.05 ? null : e; changed.push('bitiş'); }
   if (S.trim0 != null && S.trim1 != null && S.trim1 <= S.trim0 + 1) S.trim1 = null;
@@ -533,3 +595,37 @@ function showKeyState() { const k = getKey(); $('keyState').textContent = k ? 'C
 $('keySave').onclick = () => { const v = $('keyIn').value.trim(); if (v) { setKey(v); showKeyState(); } };
 $('keyDel').onclick = () => { setKey(''); showKeyState(); };
 showKeyState();
+
+/* ---------- effects ---------- */
+$('fxChips').addEventListener('click', (e) => { const b = e.target.closest('[data-fx]'); if (!b) return;
+  const k = b.dataset.fx; S.fx[k] = !S.fx[k]; b.setAttribute('aria-pressed', String(S.fx[k])); renderPreview(); });
+$('transChips').addEventListener('click', (e) => { const b = e.target.closest('[data-trans]'); if (!b) return;
+  S.trans = b.dataset.trans; pressIn('transChips', 'data-trans', S.trans); renderPreview(); });
+$('fxPower').oninput = (e) => { S.fxPower = e.target.value / 100; $('fxPowerV').textContent = e.target.value; renderPreview(); };
+
+/* ---------- reference video ---------- */
+async function applyRef() {
+  if (!S.ref) return;
+  if (S.refOn) {
+    const p = S.ref.p; S.targetShot = p.targetShot;
+    S.flashOn = p.flashOn; $('flashOn').checked = p.flashOn; if (p.flash != null) { S.flash = p.flash; setRange('flash', p.flash * 100); }
+    S.power = p.zoomPower; setRange('power', p.zoomPower * 100); S.fxPower = p.fxPower; setRange('fxPower', p.fxPower * 100);
+    S.fx.shake = p.shake; S.fx.letterbox = p.letterbox;
+    for (const k of ['shake', 'letterbox']) $('fxChips').querySelector(`[data-fx=${k}]`).setAttribute('aria-pressed', String(S.fx[k]));
+    setLook(0);
+  } else S.targetShot = null;
+  if (S.file && S.autoOn) await runAuto(true); else renderPreview();
+}
+$('refFile').onchange = async (e) => {
+  const f = e.target.files[0]; if (!f) return; const st = $('refStatus');
+  st.textContent = 'Referans video inceleniyor…';
+  try {
+    const r = await analyzeReference(f, (x) => { st.textContent = `Referans video inceleniyor… %${Math.round(x * 100)}`; });
+    const { p, summary } = styleToSettings(r);
+    S.ref = { r, p, color: r.color }; S.refOn = true; $('refOn').checked = true; $('refOpts').hidden = false;
+    st.textContent = 'Referanstan öğrenilenler: ' + summary + '.' + (S.file ? '' : ' Şimdi kendi videonu seç, bu stil uygulanacak.');
+    await applyRef();
+  } catch (er) { st.textContent = 'Referans incelenemedi: ' + er.message; }
+};
+$('refOn').onchange = async (e) => { S.refOn = e.target.checked; await applyRef(); };
+$('refAmt').oninput = (e) => { S.refAmt = e.target.value / 100; $('refAmtV').textContent = e.target.value; renderPreview(); };

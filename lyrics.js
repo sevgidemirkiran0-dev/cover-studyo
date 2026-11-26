@@ -73,7 +73,26 @@ export function drawLyrics(ctx, t, W, H, lines, style) {
   const k = W / 1080, inA = Math.min(1, (t - L.a + 0.05) / 0.18), outA = Math.min(1, (L.b + 0.25 - t) / 0.2), alpha = Math.max(0, Math.min(inA, outA));
   ctx.save(); ctx.globalAlpha = alpha; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.shadowColor = 'rgba(0,0,0,.65)'; ctx.shadowBlur = 18 * k; ctx.shadowOffsetY = 3 * k;
-  if (style === 'buyuk') {
+  if (style === 'pop') {
+    // short word groups, the sung word highlighted and popping, thick outline
+    const words = L.text.split(' '), lens = words.map((w) => w.length + 1), tot = lens.reduce((x, y) => x + y, 0);
+    const u = (t - L.a) / Math.max(0.3, L.b - L.a); let acc = 0, cur = 0; const starts = [];
+    words.forEach((_, i) => { starts.push(L.a + (acc / tot) * (L.b - L.a)); if (u * tot >= acc) cur = i; acc += lens[i]; });
+    const g0 = Math.floor(cur / 3) * 3, grp = words.slice(g0, g0 + 3), size = 84 * k;
+    ctx.font = `800 ${size}px Archivo, Inter, sans-serif`; ctx.lineJoin = 'round'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+    const up = grp.map((w) => w.toLocaleUpperCase('tr')), widths = up.map((w) => ctx.measureText(w + ' ').width);
+    let x = W / 2 - widths.reduce((a2, b2) => a2 + b2, 0) / 2 + ctx.measureText(' ').width / 2; const y = H * 0.7;
+    ctx.textAlign = 'center';
+    up.forEach((w, j) => {
+      const wi = g0 + j, cx = x + (widths[j] - ctx.measureText(' ').width) / 2, on = wi === cur;
+      const pop = on ? 1 + 0.18 * Math.max(0, 1 - (t - starts[wi]) / 0.14) : 1;
+      ctx.save(); ctx.translate(cx, y); ctx.scale(pop, pop);
+      ctx.globalAlpha = alpha * (wi <= cur ? 1 : 0.55);
+      ctx.lineWidth = 12 * k; ctx.strokeStyle = '#000'; ctx.strokeText(w, 0, 0);
+      ctx.fillStyle = on ? '#7dff4d' : '#fff'; ctx.fillText(w, 0, 0); ctx.restore();
+      x += widths[j];
+    });
+  } else if (style === 'buyuk') {
     const size = 92 * k, pop = 1 + 0.08 * Math.max(0, 1 - (t - L.a) / 0.25);
     ctx.font = `800 ${size}px Archivo, Inter, sans-serif`;
     const rows = wrap(ctx, L.text.toLocaleUpperCase('tr'), W * 0.84);

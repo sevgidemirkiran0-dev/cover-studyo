@@ -65,13 +65,15 @@ export async function askClaude(text, context) {
 // per-target "more / less / off" in each clause.
 const MOODS = [
   { w: ['duygusal', 'hüzünlü', 'romantik', 'melankolik', 'dokunaklı', 'yumuşak', 'sakin', 'huzurlu', 'naif'], name: 'duygusal',
-    p: { look: 'sinematik', colorIntensity: 70, cutSpeed: 'yavas', closeups: 'normal', zoomOn: true, zoomPower: 22, flashOn: false, reverb: 'salon', reverbAmount: 35, lyricsOn: true, lyricsStyle: 'minimal', fadeIn: 1.0, fadeOut: 2.0 } },
+    p: { look: 'sinematik', colorIntensity: 70, cutSpeed: 'yavas', closeups: 'normal', zoomOn: true, zoomPower: 22, flashOn: false, reverb: 'salon', reverbAmount: 35, lyricsOn: true, lyricsStyle: 'minimal', fadeIn: 1.0, fadeOut: 2.0, fx: { shake: false, rgb: false, vhs: false, glow: true, leak: true }, trans: 'kesme' } },
   { w: ['enerjik', 'hareketli', 'coşkulu', 'agresif', 'sert', 'güçlü bir', 'patlayan', 'hızlı bir', 'canlı'], name: 'enerjik',
-    p: { look: 'rock', colorIntensity: 85, cutSpeed: 'hizli', closeups: 'cok', zoomOn: true, zoomPower: 65, flashOn: true, flashPower: 60, reverb: 'plate', reverbAmount: 20, lyricsOn: true, lyricsStyle: 'buyuk', fadeIn: 0.3, fadeOut: 0.8 } },
+    p: { look: 'rock', colorIntensity: 85, cutSpeed: 'hizli', closeups: 'cok', zoomOn: true, zoomPower: 65, flashOn: true, flashPower: 60, reverb: 'plate', reverbAmount: 20, lyricsOn: true, lyricsStyle: 'buyuk', fadeIn: 0.3, fadeOut: 0.8, fx: { shake: true, rgb: true, leak: false }, trans: 'kaydir' } },
+  { w: ['capcut', 'trend', 'viral', 'tiktok'], name: 'trend (CapCut tarzı)',
+    p: { look: 'rock', colorIntensity: 80, cutSpeed: 'hizli', closeups: 'cok', zoomOn: true, zoomPower: 60, flashOn: true, flashPower: 55, lyricsOn: true, lyricsStyle: 'pop', fx: { shake: true, rgb: true, glow: true }, trans: 'zoom', fxPower: 60 } },
   { w: ['karanlık', 'dramatik', 'gizemli', 'kasvetli', 'loş'], name: 'karanlık ve dramatik',
-    p: { look: 'sinematik', colorIntensity: 95, cutSpeed: 'normal', closeups: 'cok', zoomOn: true, zoomPower: 40, flashOn: true, flashPower: 30, reverb: 'salon', reverbAmount: 30, fadeIn: 1.2, fadeOut: 1.8 } },
+    p: { look: 'sinematik', colorIntensity: 95, cutSpeed: 'normal', closeups: 'cok', zoomOn: true, zoomPower: 40, flashOn: true, flashPower: 30, reverb: 'salon', reverbAmount: 30, fadeIn: 1.2, fadeOut: 1.8, fx: { letterbox: true, glow: true }, trans: 'zoom' } },
   { w: ['doğal', 'sade', 'minimal', 'efektsiz', 'temiz', 'abartısız', 'gerçekçi'], name: 'doğal ve sade',
-    p: { look: 'dogal', cutSpeed: 'yavas', closeups: 'az', zoomOn: false, flashOn: false, reverb: 'oda', reverbAmount: 15, lyricsStyle: 'minimal', fadeIn: 0.5, fadeOut: 1.0 } },
+    p: { look: 'dogal', cutSpeed: 'yavas', closeups: 'az', zoomOn: false, flashOn: false, reverb: 'oda', reverbAmount: 15, lyricsStyle: 'minimal', fadeIn: 0.5, fadeOut: 1.0, fx: { shake: false, rgb: false, glow: false, leak: false, vhs: false, letterbox: false }, trans: 'kesme' } },
   { w: ['sinematik', 'film gibi', 'filmsel', 'klip gibi'], name: 'sinematik', p: { look: 'sinematik', colorIntensity: 85 } },
   { w: ['rock', 'rok', 'grunge', 'alternatif'], name: 'alternatif rock', p: { look: 'rock', colorIntensity: 85 } },
 ];
@@ -134,11 +136,28 @@ export function parseLocal(text, cur, ctx = {}) {
     if ((m = c.match(/(\d+(?:[.,]\d+)?|\d+:\d{1,2})\s*\.?\s*(?:saniye|sn)?(?:de|da|te|ta|'de|'da|'te|'ta)\s*bitir/))) { const v = timeOf(m[1]) ?? num(m[1]); p.trimEnd = v; said.push(`${fmtT(v)}'da bitir`); }
     if (has('tamamını', 'tüm video', 'bütün video', 'kesiti sıfırla', 'kesme olmasın', 'kırpma olmasın')) { p.trimStart = 0; p.trimEnd = dur; said.push('videonun tamamı'); }
 
+    // CapCut-style effects and transitions
+    const FXW = { shake: ['sarsıntı', 'titre', 'salla', 'shake', 'deprem'], rgb: ['rgb', 'renk kayma', 'kromatik'], glow: ['parlama', 'glow', 'parıltı', 'ışıltı', 'bloom', 'hale'],
+      leak: ['ışık sızıntı', 'sızıntı', 'light leak', 'güneş ışığı'], vhs: ['vhs', 'retro', 'eski kamera', 'nostalji', 'kaset'], letterbox: ['sinema bant', 'siyah bant', 'letterbox', 'bantlar'], beauty: ['cilt', 'pürüzsüz', 'güzellik', 'beauty', 'rötuş'] };
+    const fxName = { shake: 'kamera sarsıntısı', rgb: 'RGB kayması', glow: 'parlama', leak: 'ışık sızıntısı', vhs: 'VHS', letterbox: 'sinema bantları', beauty: 'cilt yumuşatma' };
+    const isTrans = has('geçiş', 'gecis', 'transition');
+    if (isTrans) {
+      const tr = has('zoom', 'zum') ? 'zoom' : has('kaydır', 'kayma', 'whip', 'swipe', 'savrul') ? 'kaydir' : has('glitch', 'bozul') ? 'glitch' : has('flaş', 'flash', 'beyaz') ? 'flas' : has('düz', 'sade', 'yok', 'olmasın', 'kapat') ? 'kesme' : null;
+      if (tr) { p.trans = tr; said.push({ zoom: 'zoom geçişler', kaydir: 'kaydırma geçişler', glitch: 'glitch geçişler', flas: 'flaş geçişler', kesme: 'düz kesme' }[tr]); }
+    } else for (const [k, ws] of Object.entries(FXW)) if (ws.some((w) => c.includes(w)) || (k === 'rgb' && has('glitch'))) {
+      p.fx = { ...(p.fx || {}), [k]: !(off && !up) }; said.push(fxName[k] + (p.fx[k] ? ' açık' : ' kapalı'));
+      if (up || down) { p.fxPower = clampV((p.fxPower ?? cur.fxPower ?? 50) + (down ? -size : size)); }
+    }
+    if (has('efekt') && !has('zoom', 'zum', 'flaş', 'flash', 'renk', 'reng') && !Object.keys(FXW).some((k) => FXW[k].some((w) => c.includes(w))) && (up || down || off)) {
+      if (off && !up) { p.fx = { shake: false, rgb: false, glow: false, leak: false, vhs: false, letterbox: false, beauty: false }; p.trans = 'kesme'; said.push('tüm efektler kapalı'); }
+      else { p.fxPower = clampV((p.fxPower ?? cur.fxPower ?? 50) + (down ? -size : size)); said.push(`efekt gücü ${p.fxPower}`); }
+    }
+
     // individual controls
-    if (has('zoom', 'yakınlaş', 'zum')) {
+    if (!isTrans && has('zoom', 'yakınlaş', 'zum')) {
       if (off && !up) { p.zoomOn = false; said.push('zoom kapalı'); } else { p.zoomOn = true; p.zoomPower = adj('zoomPower'); said.push(`zoom ${p.zoomPower}`); }
     }
-    if (has('flaş', 'flash', 'ışık', 'parlama', 'patla')) {
+    if (!isTrans && has('flaş', 'flash', 'ışık patla', 'ışıklar', 'patla') && !has('sızıntı')) {
       if (off && !up) { p.flashOn = false; said.push('flaş kapalı'); } else { p.flashOn = true; p.flashPower = adj('flashPower'); said.push(`flaş ${p.flashPower}`); }
     }
     if (has('reverb', 'yankı', 'eko', 'echo', 'hall')) {
@@ -152,7 +171,7 @@ export function parseLocal(text, cur, ctx = {}) {
       }
     }
     if (has('netleştir', 'vokal', 'sesim', 'sesi net', 'ses net', 'boğuk', 'uğultu')) { p.clarity = !(off && !up); said.push(p.clarity ? 'vokal netleştirme açık' : 'vokal netleştirme kapalı'); }
-    if (has('renk', 'reng', 'efekt', 'filtre') && !has('ışık')) { if (off && !up) { p.look = 'dogal'; said.push('renk efekti kapalı'); } else { p.colorIntensity = adj('colorIntensity'); said.push(`renk yoğunluğu ${p.colorIntensity}`); } }
+    if (has('renk', 'reng', 'filtre') && !has('ışık', 'renk kayma')) { if (off && !up) { p.look = 'dogal'; said.push('renk efekti kapalı'); } else { p.colorIntensity = adj('colorIntensity'); said.push(`renk yoğunluğu ${p.colorIntensity}`); } }
     if (has('keskin', 'netlik', 'netliğ', 'net görün', 'daha net', 'bulanık')) { p.sharpen = clampV((p.sharpen ?? cur.sharpen) + (down ? -size : size)); said.push(`netlik ${p.sharpen}`); }
     if (verb('kes', 'kesil') || has('kesme', 'geçiş', 'kurgu', 'açı', 'plan değiş', 'tempo')) {
       if (has('hızlı', 'sık', 'çabuk', 'tempolu', 'dinamik')) { p.cutSpeed = 'hizli'; said.push('hızlı kesmeler'); }
@@ -164,8 +183,8 @@ export function parseLocal(text, cur, ctx = {}) {
       if (off && !up) { p.lyricsOn = false; said.push('sözler gizli'); }
       else {
         p.lyricsOn = true;
-        if (has('büyük', 'kalın', 'ortada', 'iri')) p.lyricsStyle = 'buyuk'; else if (has('karaoke', 'kelime')) p.lyricsStyle = 'kelime'; else if (has('sade', 'küçük', 'altta', 'ince')) p.lyricsStyle = 'minimal';
-        said.push('sözler ' + ({ buyuk: 'büyük', kelime: 'kelime kelime', minimal: 'sade' }[p.lyricsStyle] || 'açık'));
+        if (has('pop', 'zıpla', 'capcut', 'tiktok')) p.lyricsStyle = 'pop'; else if (has('büyük', 'kalın', 'ortada', 'iri')) p.lyricsStyle = 'buyuk'; else if (has('karaoke', 'kelime')) p.lyricsStyle = 'kelime'; else if (has('sade', 'küçük', 'altta', 'ince')) p.lyricsStyle = 'minimal';
+        said.push('sözler ' + ({ buyuk: 'büyük', kelime: 'kelime kelime', minimal: 'sade', pop: 'pop (kelime zıplar)' }[p.lyricsStyle] || 'açık'));
       }
     }
     if (has('kararma', 'karar', 'fade', 'siyahtan', 'siyaha', 'yavaşça aç', 'yavaşça bit')) {

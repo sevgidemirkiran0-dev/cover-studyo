@@ -147,18 +147,41 @@ select{font:16px Inter,sans-serif;min-height:44px;padding:8px 10px;border-radius
     </div>
 
     <div class="panel">
-      <h2>Ritim</h2>
-      <div class="tempo"><b id="bpm">–</b><span class="muted" id="bpmTxt">Video seçilince tempo bulunur</span></div>
-      <div class="row" style="margin-top:8px"><button class="ghost small" id="half" disabled>Yarı tempo</button><button class="ghost small" id="dbl" disabled>Çift tempo</button></div>
-      <div class="tog"><span>Vuruşta zoom</span><input type="checkbox" id="zoomOn" checked></div>
-      <div class="chips" id="every" style="opacity:.4" title="Otomatik kurgu açıkken kullanılmaz">
-        <button class="chip" data-every="1" aria-pressed="false">Her vuruş</button>
-        <button class="chip" data-every="2" aria-pressed="true">2 vuruşta bir</button>
-        <button class="chip" data-every="4" aria-pressed="false">Ölçü başı</button>
+      <h2>Efektler</h2>
+      <p>Dokunarak aç ya da kapat. Hareketli efektler müziğin vuruşlarıyla birlikte çalışır.</p>
+      <div class="chips" id="fxChips">
+        <button class="chip" data-fx="shake" aria-pressed="false">Kamera sarsıntısı</button>
+        <button class="chip" data-fx="rgb" aria-pressed="false">RGB kayması</button>
+        <button class="chip" data-fx="glow" aria-pressed="false">Parlama</button>
+        <button class="chip" data-fx="leak" aria-pressed="false">Işık sızıntısı</button>
+        <button class="chip" data-fx="vhs" aria-pressed="false">VHS retro</button>
+        <button class="chip" data-fx="letterbox" aria-pressed="false">Sinema bantları</button>
+        <button class="chip" data-fx="beauty" aria-pressed="false">Cilt yumuşatma</button>
       </div>
+      <div class="muted" style="margin:12px 0 6px">Kamera açısı değişirken geçiş</div>
+      <div class="chips" id="transChips">
+        <button class="chip" data-trans="kesme" aria-pressed="true">Düz kesme</button>
+        <button class="chip" data-trans="zoom" aria-pressed="false">Zoom</button>
+        <button class="chip" data-trans="kaydir" aria-pressed="false">Kaydırma</button>
+        <button class="chip" data-trans="glitch" aria-pressed="false">Glitch</button>
+        <button class="chip" data-trans="flas" aria-pressed="false">Flaş</button>
+      </div>
+      <label class="rng">Efekt gücü<input type="range" id="fxPower" min="0" max="100" value="50"><output id="fxPowerV">50</output></label>
+      <div class="tog"><span>Vuruşta zoom</span><input type="checkbox" id="zoomOn" checked></div>
       <label class="rng">Zoom gücü<input type="range" id="power" min="0" max="100" value="45"><output id="powerV">45</output></label>
-      <div class="tog"><span>Ölçü başında ışık flaşı</span><input type="checkbox" id="flashOn" checked></div>
+      <div class="tog"><span>Işık flaşları</span><input type="checkbox" id="flashOn" checked></div>
       <label class="rng">Flaş gücü<input type="range" id="flash" min="0" max="100" value="40"><output id="flashV">40</output></label>
+    </div>
+
+    <div class="panel">
+      <h2>Referans videoyu taklit et</h2>
+      <p>Beğendiğin bir Reels'i seç; kesme hızı, flaşlar, kamera hareketi, sinema bantları ve renkleri senin videona uygulanır. Instagram bağlantıları uygulamada açılamıyor: videoyu ekran kaydıyla ya da indirerek iPad'e kaydet, sonra buradan seç.</p>
+      <label class="pick">Referans video seç<input type="file" id="refFile" accept="video/*,.mov,.mp4"></label>
+      <p class="muted" id="refStatus" style="margin-top:10px"></p>
+      <div id="refOpts" hidden>
+        <div class="tog"><span>Referans stilini kullan</span><input type="checkbox" id="refOn" checked></div>
+        <label class="rng">Renk benzerliği<input type="range" id="refAmt" min="0" max="100" value="80"><output id="refAmtV">80</output></label>
+      </div>
     </div>
 
     <div class="panel">
@@ -190,6 +213,7 @@ select{font:16px Inter,sans-serif;min-height:44px;padding:8px 10px;border-radius
           <button class="chip" data-style="minimal" aria-pressed="true">Sade</button>
           <button class="chip" data-style="kelime" aria-pressed="false">Kelime kelime</button>
           <button class="chip" data-style="buyuk" aria-pressed="false">Büyük</button>
+          <button class="chip" data-style="pop" aria-pressed="false">Pop (kelime zıplar)</button>
         </div>
         <div id="lyrList" class="lyrlist"></div>
       </div>
@@ -211,9 +235,21 @@ select{font:16px Inter,sans-serif;min-height:44px;padding:8px 10px;border-radius
       <p class="warn" id="err" hidden style="margin-top:10px"></p>
     </div>
 
+    <details class="panel">
+      <summary><b>Gelişmiş: ritim ayarları</b> <span class="muted">(otomatik kurgu bunları kendisi ayarlar)</span></summary>
+      <div class="tempo" style="margin-top:10px"><b id="bpm">–</b><span class="muted" id="bpmTxt">Video seçilince tempo bulunur</span></div>
+      <div class="row" style="margin-top:8px"><button class="ghost small" id="half" disabled>Yarı tempo</button><button class="ghost small" id="dbl" disabled>Çift tempo</button></div>
+      <p class="muted" style="margin-top:10px">Otomatik kurgu kapalıyken zoom sıklığı:</p>
+      <div class="chips" id="every">
+        <button class="chip" data-every="1" aria-pressed="false">Her vuruş</button>
+        <button class="chip" data-every="2" aria-pressed="true">2 vuruşta bir</button>
+        <button class="chip" data-every="4" aria-pressed="false">Ölçü başı</button>
+      </div>
+    </details>
+
     <div class="panel">
       <h2>Küçük kopya</h2>
-      <p>Videoyu efektsiz olarak 30 MB'ın altına küçültür (yaklaşık 25 MB, 540×960). Referans videoyu Claude sohbetine göndermek için kullan.</p>
+      <p>Videoyu efektsiz olarak 30 MB'ın altına küçültür (yaklaşık 25 MB, 540×960). Bir videoyu Claude sohbetine göndermek için kullan.</p>
       <button class="ghost" id="small" disabled>Küçük kopya oluştur</button>
     </div>
   </section>

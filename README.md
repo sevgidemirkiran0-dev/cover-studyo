@@ -7,6 +7,8 @@ iPad Safari'de çalışan, tarayıcı tabanlı cover video düzenleyici. Videola
 - Şarkı sözlerini yapay zekâyla çıkarma (Whisper) ve altyazı stilleri (Sade, Kelime kelime, Büyük)
 - "Anlat, düzenlesin": yazılı isteği kurgu ayarlarına çevirme (Claude API anahtarıyla serbest anlatım, anahtarsız basit mod)
 - Yüksek kalite: 16 Mbps çıktı, keskinleştirme, kaynağa göre sınırlı zoom
+- CapCut tarzı efektler: kamera sarsıntısı, RGB kayması, parlama, ışık sızıntısı, VHS, sinema bantları, cilt yumuşatma; zoom/kaydırma/glitch/flaş geçişleri; Pop altyazı
+- Referans videoyu taklit etme: kesme ritmi, flaşlar, kamera hareketi, sinema bantları ve renk eşleme
 - Renk profilleri: Doğal, Alternatif Rock, Sinematik
 - Otomatik tempo ve vuruş tespiti, vuruşa göre zoom, ölçü başında ışık flaşı
 - 1080×1920 Instagram Reels çıktısı (H.264 + AAC)
