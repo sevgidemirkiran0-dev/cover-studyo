@@ -518,17 +518,18 @@ async function sendPrompt() {
     let plan;
     if (getKey()) {
       try { plan = await askClaude(text, analysisContext()); }
-      catch (e) { plan = parseLocal(text, currentSettings()); plan.reply = `Claude'a ulaşılamadı (${e.message}). Basit modla denedim: ` + plan.reply; }
-    } else plan = parseLocal(text, currentSettings());
+      catch (e) { plan = parseLocal(text, currentSettings(), analysisContext()); plan.reply = `Claude'a ulaşılamadı (${e.message}), ücretsiz modla yaptım. ` + plan.reply; }
+    } else plan = parseLocal(text, currentSettings(), analysisContext());
     const changed = await applyPlan(plan);
     wait.remove(); addMsg('bot', (plan.reply || '') + (changed.length ? `\nDeğişenler: ${changed.join(', ')}.` : ''));
   } catch (e) { wait.remove(); addMsg('bot', 'Bir hata oldu: ' + e.message); }
   $('askGo').disabled = false;
 }
 $('askGo').onclick = sendPrompt;
+$('quick').addEventListener('click', (e) => { const b = e.target.closest('[data-q]'); if (!b || !S.file) return; $('ask').value = b.dataset.q; sendPrompt(); });
 $('ask').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrompt(); } });
 $('resetTrim').onclick = () => { S.trim0 = S.trim1 = null; $('trimInfo').textContent = ''; drawStrip(); renderPreview(); };
-function showKeyState() { const k = getKey(); $('keyState').textContent = k ? 'Claude bağlı ✓' : 'Basit mod (anahtar yok)'; $('keyIn').value = ''; $('keyDel').hidden = !k; }
+function showKeyState() { const k = getKey(); $('keyState').textContent = k ? 'Claude bağlı ✓' : 'kapalı (ücretsiz mod kullanılıyor)'; $('keyIn').value = ''; $('keyDel').hidden = !k; }
 $('keySave').onclick = () => { const v = $('keyIn').value.trim(); if (v) { setKey(v); showKeyState(); } };
 $('keyDel').onclick = () => { setKey(''); showKeyState(); };
 showKeyState();

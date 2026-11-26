@@ -110,11 +110,20 @@ select{font:16px Inter,sans-serif;min-height:44px;padding:8px 10px;border-radius
 
     <div class="panel ask">
       <h2>Anlat, düzenlesin</h2>
-      <div class="chat" id="chat"><div class="msg bot">Ne istediğini yaz, kurguyu ona göre değiştireyim. Örnek: "Nakaratta daha hızlı kes ve yüzüme daha çok yakın plan yap", "Sinematik olsun, reverbi biraz artır", "İlk 4 saniyeyi at, sözler büyük çıksın".</div></div>
+      <div class="chat" id="chat"><div class="msg bot">Ne istediğini yaz, kurguyu ona göre değiştireyim. Ücretsizdir ve iPad'in içinde çalışır. Örnek: "Duygusal olsun, reverbi biraz artır", "Sadece nakaratı al", "Nakaratta hızlı kes, yüzüme daha çok yakın plan yap", "İlk 4 saniyeyi at, sözler büyük çıksın".</div></div>
+      <div class="chips" id="quick" style="margin-bottom:10px">
+        <button class="chip" data-q="Duygusal olsun">Duygusal</button>
+        <button class="chip" data-q="Enerjik olsun">Enerjik</button>
+        <button class="chip" data-q="Karanlık ve dramatik olsun">Dramatik</button>
+        <button class="chip" data-q="Doğal ve sade olsun">Sade</button>
+        <button class="chip" data-q="Sadece nakaratı al">Sadece nakarat</button>
+        <button class="chip" data-q="30 saniyelik yap">30 sn</button>
+        <button class="chip" data-q="Videonun tamamını kullan">Tüm video</button>
+      </div>
       <div class="askrow"><textarea id="ask" rows="2" placeholder="Örn: Daha karanlık ve sinematik olsun, nakarata girerken flaş patlasın"></textarea><button id="askGo">Uygula</button></div>
       <div class="row" style="margin-top:8px;justify-content:space-between"><span class="muted" id="trimInfo"></span><button class="ghost small" id="resetTrim">Kesiti sıfırla</button></div>
-      <details style="margin-top:8px"><summary class="muted">Claude bağlantısı: <span id="keyState"></span></summary>
-        <p class="muted" style="margin-top:8px">Anahtar olmadan basit kelime tanıma ile çalışır. Serbest anlatım için Claude API anahtarını gir (console.anthropic.com → API Keys). Anahtar yalnızca bu iPad'de saklanır ve yalnızca Anthropic'e gönderilir. Kullanım API hesabından ücretlendirilir.</p>
+      <details style="margin-top:8px"><summary class="muted">İsteğe bağlı, ücretli: Claude bağlantısı <span id="keyState"></span></summary>
+        <p class="muted" style="margin-top:8px">Gerek yok; uygulama ücretsiz modda çalışır. Çok serbest anlatımlar için istersen Claude API anahtarı ekleyebilirsin (console.anthropic.com → API Keys, API kullanımı ayrıca ücretlendirilir). Anahtar yalnızca bu iPad'de saklanır ve yalnızca Anthropic'e gönderilir.</p>
         <div class="row"><input type="password" id="keyIn" placeholder="sk-ant-..." autocomplete="off" style="flex:1;min-width:180px"><button class="small" id="keySave">Kaydet</button><button class="ghost small" id="keyDel" hidden>Sil</button></div>
       </details>
     </div>
