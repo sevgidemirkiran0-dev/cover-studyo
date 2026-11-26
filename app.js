@@ -3,6 +3,8 @@ import {
   AudioBufferSink, QUALITY_HIGH, canEncodeAudio, getFirstEncodableVideoCodec,
 } from './vendor/mediabunny.min.mjs';
 import { analyzePicture, buildEdit, editAt } from './auto.js';
+import { decodeFull, enhance, swapSample, SyncPlayer } from './audio.js';
+import { transcribe, drawLyrics } from './lyrics.js';
 
 const $ = (id) => document.getElementById(id);
 const S = {
@@ -11,6 +13,8 @@ const S = {
   beats: [], period: 0, phase: 0, barOff: 0, fps: 0, onset: null, energy: null,
   sel: [], bars: [], result: null, conv: null, playing: false,
   autoOn: true, edl: null, correct: null, vtrack: null,
+  raw: null, proc: null, clarity: true, reverb: 'oda', wet: 0.25, origAB: false,
+  lyrics: [], lyrOn: true, lyrStyle: 'minimal',
 };
 
 /* ---------- GPU renderer: colour grade, zoom, flash ---------- */
@@ -213,23 +217,28 @@ strip.addEventListener('pointerdown', (e) => { const seek = (ev) => { const r = 
 /* ---------- preview ---------- */
 const view = $('view'), src = $('src'); let preview = null;
 const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+const lyr = $('lyr'), lctx = lyr.getContext('2d');
 function renderPreview() {
   if (!preview || src.readyState < 2) return;
   preview.draw(src, src.videoWidth, src.videoHeight, fxAt(src.currentTime), src.currentTime);
+  lctx.clearRect(0, 0, lyr.width, lyr.height);
+  if (S.lyrOn && S.lyrics.length) drawLyrics(lctx, src.currentTime, lyr.width, lyr.height, S.lyrics, S.lyrStyle);
   $('tnow').textContent = fmt(src.currentTime); drawStrip();
 }
+const player = new SyncPlayer(src);
 function loop() { renderPreview(); if (S.playing) requestAnimationFrame(loop); }
 $('play').onclick = () => { src.play(); };
 view.onclick = () => { if (!src.paused) src.pause(); };
-src.onplay = () => { S.playing = true; $('play').hidden = true; loop(); };
-src.onpause = src.onended = () => { S.playing = false; $('play').hidden = false; renderPreview(); };
-src.onseeked = renderPreview;
+src.onplay = () => { S.playing = true; $('play').hidden = true; player.start(); loop(); };
+src.onpause = src.onended = () => { S.playing = false; $('play').hidden = false; player.stop(); renderPreview(); };
+src.onseeked = () => { if (S.playing) player.start(); renderPreview(); };
 src.onloadeddata = renderPreview;
 
 /* ---------- load a file ---------- */
 async function loadFile(file) {
   if (!file) return;
-  resetResult(); S.file = file; S.beats = S.sel = S.bars = []; S.energy = null; S.edl = null; S.correct = null; $('autoOut').innerHTML = ''; $('err').hidden = true;
+  resetResult(); S.file = file; S.beats = S.sel = S.bars = []; S.energy = null; S.edl = null; S.correct = null; $('autoOut').innerHTML = '';
+  S.raw = S.proc = null; S.lyrics = []; player.set(null, false); renderLyricList(); $('lyrGo').disabled = true; $('audioStatus').textContent = ''; $('err').hidden = true;
   $('empty').hidden = true; view.hidden = false; strip.hidden = false; $('timebar').hidden = false; $('play').hidden = false; $('pInfo').hidden = false;
   if (src.src) URL.revokeObjectURL(src.src);
   src.src = URL.createObjectURL(file); src.load();
@@ -246,6 +255,7 @@ async function loadFile(file) {
     if (vw > vh) info.Not = 'Yatay video: ortadan 9:16 kırpılacak';
     $('info').innerHTML = ''; for (const [k, v] of Object.entries(info)) { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = k; dd.textContent = v; $('info').append(dt, dd); }
     $('go').disabled = $('small').disabled = false; drawStrip();
+    S.atrack = at;
     if (at) {
       const r = await analyzeAudio(at);
       if (S.file !== file) return;
@@ -254,6 +264,12 @@ async function loadFile(file) {
     } else { $('bpm').textContent = '–'; $('bpmTxt').textContent = 'Videoda ses yok'; }
     renderPreview();
     if (S.autoOn && S.file === file) await runAuto();
+    if (at && S.file === file) {
+      $('audioStatus').textContent = 'Ses hazırlanıyor…';
+      S.raw = await decodeFull(at, S.dur);
+      if (S.file !== file) return;
+      $('lyrGo').disabled = false; await applyAudio();
+    }
   } catch (e) { showErr('Video okunamadı: ' + e.message); }
 }
 $('file').onchange = (e) => loadFile(e.target.files[0]);
@@ -330,6 +346,11 @@ async function runExport(small) {
     const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target });
     const cv = document.createElement('canvas'); cv.width = 1080; cv.height = 1920;
     const rr = new Renderer(cv);
+    const withLyr = !small && S.lyrOn && S.lyrics.length > 0;
+    const comp = document.createElement('canvas'); comp.width = 1080; comp.height = 1920; const cctx = comp.getContext('2d');
+    if (withLyr) { try { await Promise.all(['800 92px Archivo', '700 64px Inter', '600 54px Inter'].map((f) => document.fonts.load(f))); } catch {} }
+    const outCanvas = (t) => { if (!withLyr) return cv; cctx.drawImage(cv, 0, 0); drawLyrics(cctx, t, 1080, 1920, S.lyrics, S.lyrStyle); return comp; };
+    const proc = !small && S.proc ? S.proc : null;
     const vcodec = (await getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: 1080, height: 1920 })) || 'avc';
     const aac = await canEncodeAudio('aac');
     // Small copy: plain re-encode at 540x960, bitrate chosen so the file stays near 25 MB (under the 30 MB chat limit).
@@ -338,10 +359,10 @@ async function runExport(small) {
       ? { width: 540, height: 960, fit: 'contain', frameRate: 30, codec: vcodec, bitrate: smallBits, forceTranscode: true }
       : { frameRate: 30, codec: vcodec, quality: QUALITY_HIGH, forceTranscode: true, allowTransformationMetadata: false,
           processedWidth: 1080, processedHeight: 1920,
-          process: (s) => { const vf = s.toVideoFrame(); try { rr.draw(vf, vf.displayWidth, vf.displayHeight, fxAt(s.timestamp), s.timestamp); } finally { vf.close(); } return cv; } };
+          process: (s) => { const vf = s.toVideoFrame(); try { rr.draw(vf, vf.displayWidth, vf.displayHeight, fxAt(s.timestamp), s.timestamp); } finally { vf.close(); } return outCanvas(s.timestamp); } };
     const conv = S.conv = await Conversion.init({
       input, output, video,
-      audio: aac ? { codec: 'aac', bitrate: small ? 128000 : 256000 } : {},
+      audio: { ...(aac ? { codec: 'aac', bitrate: small ? 128000 : 256000 } : {}), ...(proc ? { forceTranscode: true, process: (a) => swapSample(a, proc) } : {}) },
     });
     if (!conv.isValid) throw new Error('Bu video dönüştürülemiyor (' + conv.discardedTracks.map((d) => d.reason).join(', ') + ')');
     conv.onProgress = (p) => { const el = (performance.now() - t0) / 1000, eta = p > 0.03 ? el / p - el : 0;
@@ -370,3 +391,51 @@ $('share').onclick = async () => {
   else $('dl').click();
 };
 document.addEventListener('visibilitychange', () => { if (document.hidden && S.conv) $('progT').textContent += ' · Safari arka planda, render yavaşlayabilir'; });
+
+/* ---------- vocal sound ---------- */
+let audioTimer = 0, audioJob = 0;
+async function applyAudio() {
+  if (!S.raw) return;
+  const job = ++audioJob, st = $('audioStatus');
+  const active = S.clarity || (S.reverb !== 'yok' && S.wet > 0);
+  if (!active) { S.proc = null; player.set(null, false); st.textContent = 'Orijinal ses kullanılıyor.'; return; }
+  st.textContent = 'Ses işleniyor…';
+  const out = await enhance(S.raw, { clarity: S.clarity, reverb: S.reverb, wet: S.wet });
+  if (job !== audioJob) return;
+  S.proc = out; player.set(S.origAB ? null : out, !S.origAB);
+  st.textContent = (S.clarity ? 'Vokal netleştirildi' : 'Netleştirme kapalı') + (S.reverb !== 'yok' && S.wet > 0 ? `, ${$('rev').querySelector('[aria-pressed=true]').textContent} reverb eklendi.` : '.') + ' Oynatarak dinle.';
+}
+const queueAudio = () => { clearTimeout(audioTimer); audioTimer = setTimeout(applyAudio, 350); };
+$('clarity').onchange = (e) => { S.clarity = e.target.checked; queueAudio(); };
+$('rev').addEventListener('click', (e) => { const b = e.target.closest('[data-rev]'); if (!b) return;
+  for (const x of $('rev').querySelectorAll('[data-rev]')) x.setAttribute('aria-pressed', String(x === b)); S.reverb = b.dataset.rev; queueAudio(); });
+$('wet').oninput = (e) => { S.wet = e.target.value / 100; $('wetV').textContent = e.target.value; queueAudio(); };
+$('ab').onclick = () => { S.origAB = !S.origAB; $('ab').textContent = S.origAB ? 'İşlenmiş sesi dinle' : 'Orijinali dinle'; player.set(S.origAB ? null : S.proc, !S.origAB && !!S.proc); };
+
+/* ---------- lyrics ---------- */
+function renderLyricList() {
+  const box = $('lyrList'); box.innerHTML = '';
+  S.lyrics.forEach((l, i) => {
+    const row = document.createElement('div'); row.className = 'lrow';
+    const tm = document.createElement('button'); tm.className = 'ghost small'; tm.textContent = fmt(l.a); tm.title = 'Bu satıra git';
+    tm.onclick = () => { src.currentTime = l.a + 0.05; };
+    const inp = document.createElement('input'); inp.type = 'text'; inp.value = l.text; inp.id = 'lyr-' + i;
+    inp.oninput = () => { l.text = inp.value; renderPreview(); };
+    const del = document.createElement('button'); del.className = 'ghost small'; del.textContent = 'Sil';
+    del.onclick = () => { S.lyrics.splice(i, 1); renderLyricList(); renderPreview(); };
+    row.append(tm, inp, del); box.append(row);
+  });
+  $('lyrOpts').hidden = !S.lyrics.length;
+}
+$('lyrGo').onclick = async () => {
+  if (!S.raw) return; const st = $('lyrStatus'), b = $('lyrGo'); b.disabled = true;
+  try {
+    const lines = await transcribe(S.raw, { lang: $('lang').value || null, big: $('bigModel').checked }, (m) => { st.textContent = m; });
+    S.lyrics = lines; renderLyricList(); renderPreview();
+    st.textContent = lines.length ? `${lines.length} satır bulundu. Yanlış kelimeleri kutulardan düzeltebilirsin.` : 'Söz bulunamadı. Vokal müzikten zayıf olabilir; büyük modeli dene.';
+  } catch (e) { st.textContent = 'Sözler çıkarılamadı: ' + (e?.message || e); }
+  b.disabled = false;
+};
+$('lyrOn').onchange = (e) => { S.lyrOn = e.target.checked; renderPreview(); };
+$('lyrStyle').addEventListener('click', (e) => { const b = e.target.closest('[data-style]'); if (!b) return;
+  for (const x of $('lyrStyle').querySelectorAll('[data-style]')) x.setAttribute('aria-pressed', String(x === b)); S.lyrStyle = b.dataset.style; renderPreview(); });

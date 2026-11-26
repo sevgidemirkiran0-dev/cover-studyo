@@ -66,6 +66,12 @@ input[type=range]{width:100%;accent-color:var(--red);height:32px}
 .tempo b{font:800 30px/1 Archivo,sans-serif;font-variant-numeric:tabular-nums}
 .small{min-height:36px;padding:4px 12px;font-size:14px}
 .auto{border-color:var(--red)}
+.screen canvas#lyr{z-index:1}
+select{font:16px Inter,sans-serif;min-height:44px;padding:8px 10px;border-radius:10px;border:2px solid var(--line);background:#181315;color:var(--ink)}
+.lyrlist{display:flex;flex-direction:column;gap:6px;margin-top:12px;max-height:420px;overflow-y:auto}
+.lrow{display:grid;grid-template-columns:max-content minmax(0,1fr) max-content;gap:6px;align-items:center}
+.lrow input{font:16px Inter,sans-serif;min-height:40px;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:#181315;color:var(--ink);width:100%}
+.tog small{font-size:13px}
 </style>
 </head>
 <body>
@@ -74,6 +80,7 @@ input[type=range]{width:100%;accent-color:var(--red);height:32px}
   <section class="stage">
     <div class="screen" id="screen">
       <canvas id="view" width="540" height="960" hidden></canvas>
+      <canvas id="lyr" width="540" height="960" style="pointer-events:none"></canvas>
       <video id="out" class="out" controls playsinline hidden></video>
       <div class="empty" id="empty">
         <b>Cover videonu seç</b>
@@ -123,6 +130,40 @@ input[type=range]{width:100%;accent-color:var(--red);height:32px}
       <label class="rng">Zoom gücü<input type="range" id="power" min="0" max="100" value="45"><output id="powerV">45</output></label>
       <div class="tog"><span>Ölçü başında ışık flaşı</span><input type="checkbox" id="flashOn" checked></div>
       <label class="rng">Flaş gücü<input type="range" id="flash" min="0" max="100" value="40"><output id="flashV">40</output></label>
+    </div>
+
+    <div class="panel">
+      <h2>Ses</h2>
+      <div class="tog"><span>Vokali netleştir<br><small class="muted">Uğultuyu keser, sözleri öne çıkarır, sesi dengeler</small></span><input type="checkbox" id="clarity" checked></div>
+      <div class="muted" style="margin:6px 0">Reverb</div>
+      <div class="chips" id="rev">
+        <button class="chip" data-rev="yok" aria-pressed="false">Yok</button>
+        <button class="chip" data-rev="oda" aria-pressed="true">Oda</button>
+        <button class="chip" data-rev="plate" aria-pressed="false">Plate</button>
+        <button class="chip" data-rev="salon" aria-pressed="false">Salon</button>
+      </div>
+      <label class="rng">Reverb miktarı<input type="range" id="wet" min="0" max="100" value="25"><output id="wetV">25</output></label>
+      <div class="row" style="margin-top:12px"><button class="ghost small" id="ab">Orijinali dinle</button><span class="muted" id="audioStatus"></span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Şarkı sözleri</h2>
+      <p>Yapay zekâ videodaki sözleri dinleyip yazıya döker; sözler videoda altyazı olarak çıkar. İlk kullanımda model indirilir (yaklaşık 80–250 MB, Wi-Fi önerilir).</p>
+      <div class="row">
+        <select id="lang" aria-label="Şarkının dili"><option value="turkish">Türkçe</option><option value="english">İngilizce</option><option value="">Otomatik</option></select>
+        <label class="row muted" style="gap:6px"><input type="checkbox" id="bigModel" style="width:22px;height:22px;accent-color:var(--red)">Daha doğru (büyük model)</label>
+      </div>
+      <button id="lyrGo" style="margin-top:12px" disabled>Şarkı sözlerini çıkar</button>
+      <p class="muted" id="lyrStatus" style="margin-top:10px"></p>
+      <div id="lyrOpts" hidden>
+        <div class="tog"><span>Sözleri videoda göster</span><input type="checkbox" id="lyrOn" checked></div>
+        <div class="chips" id="lyrStyle">
+          <button class="chip" data-style="minimal" aria-pressed="true">Sade</button>
+          <button class="chip" data-style="kelime" aria-pressed="false">Kelime kelime</button>
+          <button class="chip" data-style="buyuk" aria-pressed="false">Büyük</button>
+        </div>
+        <div id="lyrList" class="lyrlist"></div>
+      </div>
     </div>
 
     <div class="panel">
