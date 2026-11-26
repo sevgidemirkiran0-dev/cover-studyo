@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Cover Stüdyo">
+<meta name="theme-color" content="#9e0f25">
+<title>Cover Stüdyo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;800&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{color-scheme:dark;--bg:#151113;--panel:#1f191c;--line:#3a2f33;--ink:#f3ece8;--mute:#b2a3a8;--red:#e0475e;--band:#9e0f25;--ok:#2fc2b5;--warn:#f0a838}
+*{box-sizing:border-box;min-width:0}
+[hidden]{display:none!important}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 Inter,system-ui,sans-serif;-webkit-text-size-adjust:100%}
+body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);overflow-x:clip}
+h1,h2{font-family:Archivo,Inter,sans-serif;letter-spacing:-.02em;line-height:1.05;margin:0}
+h1{font-size:24px;font-weight:800}
+h2{font-size:18px;font-weight:800;margin-bottom:10px}
+header{background:var(--band);display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px max(3vw,16px)}
+header small{color:#ffd9de;font-size:14px}
+main{display:grid;grid-template-columns:minmax(0,auto) minmax(0,1fr);gap:24px;padding:20px max(3vw,16px) 40px;max-width:1300px;margin:0 auto;align-items:start}
+@media(max-width:760px){main{grid-template-columns:minmax(0,1fr)}}
+.stage{position:sticky;top:12px;display:flex;flex-direction:column;gap:10px;width:min(100%,calc((100svh - 190px)*9/16));min-width:260px;margin:0 auto}
+@media(max-width:760px){.stage{position:static;width:min(100%,420px)}}
+.screen{position:relative;aspect-ratio:9/16;background:#000;border-radius:14px;overflow:hidden;border:1px solid var(--line)}
+.screen canvas,.screen video.out{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+.empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;color:var(--mute)}
+.empty b{color:var(--ink);font:800 22px/1.1 Archivo,sans-serif}
+.play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:76px;height:76px;border-radius:50%;border:0;background:rgb(0 0 0/.55);color:#fff;font-size:30px;display:flex;align-items:center;justify-content:center;padding:0;min-height:0}
+.play[hidden]{display:none}
+.bar{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--mute);font-variant-numeric:tabular-nums}
+#strip{width:100%;height:56px;display:block;border-radius:8px;background:#0f0c0d;touch-action:none;cursor:pointer}
+.side{display:flex;flex-direction:column;gap:16px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+.panel p{margin:0 0 10px;color:var(--mute);font-size:15px}
+.muted{color:var(--mute);font-size:14px}
+button,.pick{font:600 16px Inter,sans-serif;min-height:44px;padding:10px 18px;border-radius:10px;border:2px solid var(--red);background:var(--red);color:#fff;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;-webkit-tap-highlight-color:transparent}
+button.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,.pick:focus-within{outline:3px solid var(--warn);outline-offset:2px}
+.pick{position:relative;overflow:hidden}
+.pick input{position:absolute;inset:0;opacity:0;font-size:0;cursor:pointer}
+.big{width:100%;min-height:54px;font-size:18px}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.looks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.look{display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:8px;border-radius:12px;border:2px solid var(--line);background:#181315;color:var(--ink);font-weight:600;min-height:0}
+.look[aria-pressed=true]{border-color:var(--red);background:#2a1a1f}
+.look i{display:block;height:54px;border-radius:8px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{min-height:40px;padding:6px 14px;border-radius:20px;border:2px solid var(--line);background:transparent;color:var(--ink);font-size:15px}
+.chip[aria-pressed=true]{border-color:var(--red);background:var(--red)}
+label.rng{display:grid;grid-template-columns:110px minmax(0,1fr) 44px;align-items:center;gap:10px;font-size:15px;margin-top:12px}
+label.rng output{text-align:right;color:var(--mute);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--red);height:32px}
+.tog{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;font-size:16px}
+.tog input{width:24px;height:24px;accent-color:var(--red)}
+.kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 14px;font-size:14px}
+.kv dt{color:var(--mute)}.kv dd{margin:0;overflow-wrap:anywhere}
+.prog{height:12px;background:#0f0c0d;border-radius:6px;overflow:hidden;margin:12px 0 6px}
+.prog i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--band),var(--red));transition:width .2s}
+.ok{color:var(--ok)}.warn{color:var(--warn)}
+.tempo{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.tempo b{font:800 30px/1 Archivo,sans-serif;font-variant-numeric:tabular-nums}
+.small{min-height:36px;padding:4px 12px;font-size:14px}
+</style>
+</head>
+<body>
+<header><h1>Cover Stüdyo</h1><small id="hdr">Faz 1 · Reels 1080×1920</small></header>
+<main>
+  <section class="stage">
+    <div class="screen" id="screen">
+      <canvas id="view" width="540" height="960" hidden></canvas>
+      <video id="out" class="out" controls playsinline hidden></video>
+      <div class="empty" id="empty">
+        <b>Cover videonu seç</b>
+        <span>Dikey çektiğin videoyu seç. Dosyalar uygulamasından seçmek kaliteyi korur.</span>
+        <label class="pick">Video seç<input type="file" id="file" accept="video/*,.mov,.mp4"></label>
+      </div>
+      <button class="play" id="play" hidden aria-label="Oynat">▶</button>
+    </div>
+    <canvas id="strip" hidden aria-label="Ritim şeridi: dokunarak sar"></canvas>
+    <div class="bar" id="timebar" hidden><span id="tnow">0:00</span><span style="flex:1"></span><span id="tdur">0:00</span></div>
+    <video id="src" playsinline preload="auto" hidden></video>
+  </section>
+
+  <section class="side">
+    <div class="panel" id="pInfo" hidden>
+      <div class="row" style="justify-content:space-between"><h2 style="margin:0">Video</h2><label class="pick ghost small" style="border:2px solid var(--line);background:transparent">Değiştir<input type="file" id="file2" accept="video/*,.mov,.mp4"></label></div>
+      <dl class="kv" id="info" style="margin-top:10px"></dl>
+    </div>
+
+    <div class="panel">
+      <h2>Görünüm</h2>
+      <div class="looks" id="looks">
+        <button class="look" data-look="0" aria-pressed="false"><i style="background:linear-gradient(135deg,#d9a27a,#6d8fa8)"></i>Doğal</button>
+        <button class="look" data-look="1" aria-pressed="true"><i style="background:linear-gradient(135deg,#1b2a2a,#56605a 55%,#c9bfae)"></i>Alternatif Rock</button>
+        <button class="look" data-look="2" aria-pressed="false"><i style="background:linear-gradient(135deg,#0d3b47,#2c6e74 45%,#e39a5c)"></i>Sinematik</button>
+      </div>
+      <label class="rng">Yoğunluk<input type="range" id="amt" min="0" max="100" value="80"><output id="amtV">80</output></label>
+    </div>
+
+    <div class="panel">
+      <h2>Ritim</h2>
+      <div class="tempo"><b id="bpm">–</b><span class="muted" id="bpmTxt">Video seçilince tempo bulunur</span></div>
+      <div class="row" style="margin-top:8px"><button class="ghost small" id="half" disabled>Yarı tempo</button><button class="ghost small" id="dbl" disabled>Çift tempo</button></div>
+      <div class="tog"><span>Vuruşta zoom</span><input type="checkbox" id="zoomOn" checked></div>
+      <div class="chips" id="every">
+        <button class="chip" data-every="1" aria-pressed="false">Her vuruş</button>
+        <button class="chip" data-every="2" aria-pressed="true">2 vuruşta bir</button>
+        <button class="chip" data-every="4" aria-pressed="false">Ölçü başı</button>
+      </div>
+      <label class="rng">Zoom gücü<input type="range" id="power" min="0" max="100" value="45"><output id="powerV">45</output></label>
+      <div class="tog"><span>Ölçü başında ışık flaşı</span><input type="checkbox" id="flashOn" checked></div>
+      <label class="rng">Flaş gücü<input type="range" id="flash" min="0" max="100" value="40"><output id="flashV">40</output></label>
+    </div>
+
+    <div class="panel">
+      <h2>Dışa aktar</h2>
+      <p>1080×1920, 30 kare/sn, H.264 + AAC. Render sırasında Safari'yi açık tut ve ekranı kilitleme.</p>
+      <button class="big" id="go" disabled>Reels videosunu oluştur</button>
+      <div id="progBox" hidden>
+        <div class="prog"><i id="progI"></i></div>
+        <div class="row" style="justify-content:space-between"><span class="muted" id="progT">Hazırlanıyor…</span><button class="ghost small" id="cancel">İptal</button></div>
+      </div>
+      <div id="done" hidden style="margin-top:14px">
+        <p class="ok" id="doneT" style="margin-bottom:10px"></p>
+        <div class="row"><button id="share">Fotoğraflar'a kaydet</button><button class="ghost" id="dl">Dosyalar'a indir</button><button class="ghost" id="back">Düzenlemeye dön</button></div>
+        <p class="muted" style="margin-top:10px">"Fotoğraflar'a kaydet" paylaşım menüsünü açar; oradan "Videoyu Kaydet"i seç.</p>
+      </div>
+      <p class="warn" id="err" hidden style="margin-top:10px"></p>
+    </div>
+
+    <div class="panel">
+      <h2>Küçük kopya</h2>
+      <p>Videoyu efektsiz olarak 30 MB'ın altına küçültür (yaklaşık 25 MB, 540×960). Referans videoyu Claude sohbetine göndermek için kullan.</p>
+      <button class="ghost" id="small" disabled>Küçük kopya oluştur</button>
+    </div>
+  </section>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

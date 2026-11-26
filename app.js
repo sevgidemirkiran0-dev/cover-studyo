@@ -1,0 +1,314 @@
+import {
+  Input, Output, Conversion, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS,
+  AudioBufferSink, QUALITY_HIGH, canEncodeAudio, getFirstEncodableVideoCodec,
+} from './vendor/mediabunny.min.mjs';
+
+const $ = (id) => document.getElementById(id);
+const S = {
+  file: null, dur: 0, look: 1, amt: 0.8,
+  zoomOn: true, every: 2, power: 0.45, flashOn: true, flash: 0.4,
+  beats: [], period: 0, phase: 0, barOff: 0, fps: 0, onset: null, energy: null,
+  sel: [], bars: [], result: null, conv: null, playing: false,
+};
+
+/* ---------- GPU renderer: colour grade, zoom, flash ---------- */
+const VS = `#version 300 es
+in vec2 p; out vec2 v;
+void main(){ v = p*.5+.5; gl_Position = vec4(p,0.,1.); }`;
+const FS = `#version 300 es
+precision highp float;
+in vec2 v; out vec4 o;
+uniform sampler2D T; uniform vec2 C, R; uniform float Z, F, A, TM; uniform int L;
+float h(vec2 q){ return fract(sin(dot(q, vec2(12.9898,78.233)))*43758.5453); }
+float lum(vec3 c){ return dot(c, vec3(.2126,.7152,.0722)); }
+void main(){
+  vec2 q = (v-.5)/Z*C+.5; q.y = 1.-q.y;
+  vec3 c = texture(T,q).rgb, g = c;
+  float vig = 0., grain = 0.;
+  if (L==1) {            // Alternatif Rock
+    g = mix(vec3(lum(c)), c, .6);
+    g = (g-.5)*1.28+.5;
+    g = clamp((g-.045)/.955, 0., 1.);
+    float lg = lum(g);
+    g += (1.-smoothstep(0.,.55,lg))*vec3(-.03,.025,.045);
+    g += smoothstep(.55,1.,lg)*vec3(.035,.02,-.015);
+    vig = .55; grain = .07;
+  } else if (L==2) {     // Sinematik
+    g = mix(g, g*g*(3.-2.*g), .45);
+    g = g*.93+.035;
+    float lg = lum(g);
+    g += (1.-smoothstep(0.,.6,lg))*vec3(-.05,.015,.07);
+    g += smoothstep(.35,1.,lg)*vec3(.07,.025,-.05);
+    g = mix(vec3(lum(g)), g, 1.08);
+    vig = .35; grain = .025;
+  }
+  vec2 d = (v-.5)*vec2(1.,1.25);
+  g *= 1.-vig*smoothstep(.25,.85,length(d));
+  g += (h(floor(v*R)+TM)-.5)*grain;
+  g = mix(c, g, A);
+  g += F*vec3(1.,.93,.85)*.45;
+  o = vec4(clamp(g,0.,1.),1.);
+}`;
+
+class Renderer {
+  constructor(canvas) {
+    this.cv = canvas;
+    const gl = this.gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true, alpha: false, antialias: false });
+    if (!gl) throw new Error('WebGL2 kullanılamıyor');
+    const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x);
+      if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x)); return x; };
+    const pr = this.pr = gl.createProgram();
+    gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(pr); gl.useProgram(pr);
+    const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(pr, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    this.tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    this.u = {}; for (const n of ['C', 'R', 'Z', 'F', 'A', 'TM', 'L', 'T']) this.u[n] = gl.getUniformLocation(pr, n);
+  }
+  draw(src, sw, sh, fx, t) {
+    const { gl, u, cv } = this; const W = cv.width, H = cv.height;
+    gl.viewport(0, 0, W, H);
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+    const as = sw / sh, ad = W / H;
+    gl.uniform2f(u.C, as > ad ? ad / as : 1, as > ad ? 1 : as / ad);
+    gl.uniform2f(u.R, W / 2, H / 2);
+    gl.uniform1f(u.Z, fx.z); gl.uniform1f(u.F, fx.f); gl.uniform1f(u.A, S.look ? S.amt : 0);
+    gl.uniform1f(u.TM, Math.floor(t * 24) % 97); gl.uniform1i(u.L, S.look); gl.uniform1i(u.T, 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+}
+
+/* ---------- beat-driven effects ---------- */
+const lastLE = (a, t) => { let lo = 0, hi = a.length - 1, r = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (a[m] <= t) { r = m; lo = m + 1; } else hi = m - 1; } return r; };
+const energyAt = (t) => S.energy ? S.energy[Math.min(S.energy.length - 1, Math.max(0, Math.round(t * S.fps)))] : 0.7;
+const punch = (dt, decay) => dt < 0.025 ? dt / 0.025 : Math.exp(-(dt - 0.025) / decay);
+function fxAt(t) {
+  let z = 1 + 0.025 * (S.dur ? Math.min(1, t / S.dur) : 0), f = 0;
+  if (S.zoomOn && S.sel.length) {
+    const i = lastLE(S.sel, t);
+    if (i >= 0) z += S.power * 0.14 * punch(t - S.sel[i], 0.16) * (0.45 + 0.55 * energyAt(S.sel[i]));
+  }
+  if (S.flashOn && S.bars.length) {
+    const i = lastLE(S.bars, t);
+    if (i >= 0) { const e = energyAt(S.bars[i]); f = S.flash * punch(t - S.bars[i], 0.09) * e * e; }
+  }
+  return { z, f };
+}
+function rebuildSel() {
+  const { beats, barOff } = S;
+  S.bars = beats.filter((_, i) => ((i - barOff) % 4 + 4) % 4 === 0);
+  S.sel = S.every === 4 ? S.bars : S.every === 2 ? beats.filter((_, i) => ((i - barOff) % 2 + 2) % 2 === 0) : beats;
+}
+
+/* ---------- audio analysis: onset envelope, tempo, beats, energy ---------- */
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; } }
+  for (let len = 2; len <= n; len <<= 1) {
+    const a = -2 * Math.PI / len, wr = Math.cos(a), wi = Math.sin(a);
+    for (let i = 0; i < n; i += len) { let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) { const p = i + k, q = p + len / 2;
+        const tr = re[q] * cr - im[q] * ci, ti = re[q] * ci + im[q] * cr;
+        re[q] = re[p] - tr; im[q] = im[p] - ti; re[p] += tr; im[p] += ti;
+        const nr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = nr; } }
+  }
+}
+async function analyzeAudio(track) {
+  const sink = new AudioBufferSink(track);
+  const parts = []; let ds = 0, fs = 0, acc = 0, cnt = 0, total = 0;
+  for await (const { buffer } of sink.buffers()) {
+    if (!ds) { ds = Math.max(1, Math.round(buffer.sampleRate / 11025)); fs = buffer.sampleRate / ds; }
+    const n = buffer.length, a = buffer.getChannelData(0), b = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : a;
+    const out = new Float32Array(Math.ceil(n / ds) + 1); let k = 0;
+    for (let i = 0; i < n; i++) { acc += a[i] + b[i]; if (++cnt === ds) { out[k++] = acc / (2 * ds); acc = 0; cnt = 0; } }
+    parts.push(out.subarray(0, k)); total += k;
+  }
+  if (!total) return null;
+  const x = new Float32Array(total); let o = 0; for (const p of parts) { x.set(p, o); o += p.length; }
+  const N = 512, hop = 128, frames = Math.max(0, Math.floor((total - N) / hop));
+  const win = new Float32Array(N).map((_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N));
+  const flux = new Float32Array(frames), rms = new Float32Array(frames);
+  let prev = new Float32Array(N / 2), re = new Float32Array(N), im = new Float32Array(N);
+  for (let f = 0; f < frames; f++) {
+    let e = 0; for (let i = 0; i < N; i++) { const s = x[f * hop + i]; re[i] = s * win[i]; im[i] = 0; e += s * s; }
+    rms[f] = Math.sqrt(e / N); fft(re, im);
+    let fl = 0; for (let k = 1; k < N / 2; k++) { const m = Math.log1p(100 * Math.hypot(re[k], im[k])); const d = m - prev[k]; if (d > 0) fl += d; prev[k] = m; }
+    flux[f] = fl;
+    if (f % 2000 === 0) await new Promise((r) => setTimeout(r));
+  }
+  const fps = fs / hop;
+  const W = Math.round(fps * 0.5), onset = new Float32Array(frames); let sum = 0;
+  for (let i = 0; i < frames; i++) { sum += flux[i]; if (i >= W) sum -= flux[i - W]; onset[i] = Math.max(0, flux[i] - sum / Math.min(i + 1, W)); }
+  const E = Math.round(fps * 2), energy = new Float32Array(frames); sum = 0;
+  for (let i = 0; i < frames; i++) { sum += rms[i]; if (i >= E) sum -= rms[i - E]; energy[i] = sum / Math.min(i + 1, E); }
+  const sorted = Array.from(energy).sort((p, q) => p - q), hi = sorted[Math.floor(sorted.length * 0.95)] || 1, lo = sorted[Math.floor(sorted.length * 0.1)] || 0;
+  for (let i = 0; i < frames; i++) energy[i] = Math.min(1, Math.max(0, (energy[i] - lo) / (hi - lo || 1)));
+  return { fps, onset, energy };
+}
+function findTempo(onset, fps, prefer = 110) {
+  const n = onset.length, minL = Math.floor(fps * 60 / 190), maxL = Math.ceil(fps * 60 / 60);
+  const ac = new Float32Array(maxL + 2);
+  for (let L = minL - 1; L <= maxL + 1; L++) { let s = 0; for (let i = 0; i + L < n; i++) s += onset[i] * onset[i + L]; ac[L] = s / (n - L); }
+  let best = minL, bs = -1;
+  for (let L = minL; L <= maxL; L++) { const bpm = 60 * fps / L, w = Math.exp(-0.5 * (Math.log2(bpm / prefer) / 0.7) ** 2), s = ac[L] * w; if (s > bs) { bs = s; best = L; } }
+  const a = ac[best - 1], b = ac[best], c = ac[best + 1], den = a - 2 * b + c;
+  return best + (den ? 0.5 * (a - c) / den : 0);
+}
+function placeBeats(period) {
+  const { onset, fps } = S; const n = onset.length;
+  const val = (i) => { const r = Math.round(i); return r >= 0 && r < n ? Math.max(onset[r], onset[r - 1] || 0, onset[r + 1] || 0) : 0; };
+  let ph = 0, bs = -1;
+  for (let p = 0; p < period; p += 0.5) { let s = 0; for (let i = p; i < n; i += period) s += val(i); if (s > bs) { bs = s; ph = p; } }
+  const beats = []; for (let i = ph; i < n; i += period) beats.push(i / fps);
+  let off = 0, os = -1;
+  for (let k = 0; k < 4; k++) { let s = 0; for (let j = k; j < beats.length; j += 4) s += val(beats[j] * fps) * (0.5 + S.energy[Math.min(n - 1, Math.round(beats[j] * fps))]); if (s > os) { os = s; off = k; } }
+  Object.assign(S, { period, beats, barOff: off });
+  rebuildSel(); showTempo(); drawStrip();
+}
+function showTempo() {
+  const bpm = 60 * S.fps / S.period;
+  $('bpm').textContent = Math.round(bpm) + ' BPM';
+  $('bpmTxt').textContent = S.beats.length + ' vuruş bulundu. Zoom yanlış yere düşüyorsa yarı/çift tempoyu dene.';
+  $('half').disabled = $('dbl').disabled = false;
+}
+
+/* ---------- timeline strip ---------- */
+const strip = $('strip');
+function drawStrip() {
+  if (strip.hidden) return;
+  const dpr = devicePixelRatio || 1, W = strip.clientWidth * dpr, H = strip.clientHeight * dpr;
+  if (strip.width !== W || strip.height !== H) { strip.width = W; strip.height = H; }
+  const c = strip.getContext('2d'); c.clearRect(0, 0, W, H);
+  const d = S.dur || 1;
+  if (S.energy) { c.fillStyle = '#3a2f33'; c.beginPath(); c.moveTo(0, H);
+    const n = S.energy.length; for (let x = 0; x <= W; x += 2) { const e = S.energy[Math.min(n - 1, Math.floor(x / W * n))]; c.lineTo(x, H - 6 - e * (H - 14)); }
+    c.lineTo(W, H); c.fill(); }
+  c.fillStyle = '#8a7c81'; for (const t of S.sel) c.fillRect(t / d * W, H * 0.55, dpr, H * 0.45);
+  c.fillStyle = '#e0475e'; for (const t of S.bars) c.fillRect(t / d * W - dpr / 2, H * 0.2, 2 * dpr, H * 0.8);
+  const v = $('src'); c.fillStyle = '#fff'; c.fillRect(v.currentTime / d * W - dpr, 0, 2 * dpr, H);
+}
+new ResizeObserver(drawStrip).observe(strip);
+strip.addEventListener('pointerdown', (e) => { const seek = (ev) => { const r = strip.getBoundingClientRect(); $('src').currentTime = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * S.dur; };
+  seek(e); strip.setPointerCapture(e.pointerId); strip.onpointermove = seek; strip.onpointerup = () => { strip.onpointermove = null; }; });
+
+/* ---------- preview ---------- */
+const view = $('view'), src = $('src'); let preview = null;
+const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+function renderPreview() {
+  if (!preview || src.readyState < 2) return;
+  preview.draw(src, src.videoWidth, src.videoHeight, fxAt(src.currentTime), src.currentTime);
+  $('tnow').textContent = fmt(src.currentTime); drawStrip();
+}
+function loop() { renderPreview(); if (S.playing) requestAnimationFrame(loop); }
+$('play').onclick = () => { src.play(); };
+view.onclick = () => { if (!src.paused) src.pause(); };
+src.onplay = () => { S.playing = true; $('play').hidden = true; loop(); };
+src.onpause = src.onended = () => { S.playing = false; $('play').hidden = false; renderPreview(); };
+src.onseeked = renderPreview;
+src.onloadeddata = renderPreview;
+
+/* ---------- load a file ---------- */
+async function loadFile(file) {
+  if (!file) return;
+  resetResult(); S.file = file; S.beats = S.sel = S.bars = []; S.energy = null; $('err').hidden = true;
+  $('empty').hidden = true; view.hidden = false; strip.hidden = false; $('timebar').hidden = false; $('play').hidden = false; $('pInfo').hidden = false;
+  if (src.src) URL.revokeObjectURL(src.src);
+  src.src = URL.createObjectURL(file); src.load();
+  if (!preview) preview = new Renderer(view);
+  $('bpm').textContent = '…'; $('bpmTxt').textContent = 'Ritim analiz ediliyor…'; $('go').disabled = $('small').disabled = true;
+  try {
+    const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
+    const [vt, at] = [await input.getPrimaryVideoTrack(), await input.getPrimaryAudioTrack()];
+    if (!vt) throw new Error('Bu dosyada video bulunamadı');
+    S.dur = await input.computeDuration(); $('tdur').textContent = fmt(S.dur);
+    const vw = vt.displayWidth, vh = vt.displayHeight;
+    const info = { Dosya: file.name, Boyut: (file.size / 1e6).toFixed(0) + ' MB', Çözünürlük: `${vw}×${vh}`, Süre: fmt(S.dur), Codec: (vt.codec || '?').toUpperCase(), Ses: at ? 'Var' : 'Yok' };
+    if (vw > vh) info.Not = 'Yatay video: ortadan 9:16 kırpılacak';
+    $('info').innerHTML = ''; for (const [k, v] of Object.entries(info)) { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = k; dd.textContent = v; $('info').append(dt, dd); }
+    $('go').disabled = $('small').disabled = false; drawStrip();
+    if (at) {
+      const r = await analyzeAudio(at);
+      if (S.file !== file) return;
+      if (r && r.onset.length > r.fps * 4) { Object.assign(S, r); placeBeats(findTempo(r.onset, r.fps)); }
+      else { $('bpm').textContent = '–'; $('bpmTxt').textContent = 'Video çok kısa, ritim bulunamadı'; }
+    } else { $('bpm').textContent = '–'; $('bpmTxt').textContent = 'Videoda ses yok'; }
+    renderPreview();
+  } catch (e) { showErr('Video okunamadı: ' + e.message); }
+}
+$('file').onchange = (e) => loadFile(e.target.files[0]);
+$('file2').onchange = (e) => loadFile(e.target.files[0]);
+
+/* ---------- controls ---------- */
+const pressGroup = (box, attr, key, cast = Number) => box.addEventListener('click', (e) => { const b = e.target.closest('[' + attr + ']'); if (!b) return;
+  for (const x of box.querySelectorAll('[' + attr + ']')) x.setAttribute('aria-pressed', String(x === b)); S[key] = cast(b.getAttribute(attr)); rebuildSel(); drawStrip(); renderPreview(); });
+pressGroup($('looks'), 'data-look', 'look'); pressGroup($('every'), 'data-every', 'every');
+for (const [id, key] of [['amt', 'amt'], ['power', 'power'], ['flash', 'flash']]) $(id).oninput = (e) => { S[key] = e.target.value / 100; $(id + 'V').textContent = e.target.value; renderPreview(); };
+$('zoomOn').onchange = (e) => { S.zoomOn = e.target.checked; renderPreview(); };
+$('flashOn').onchange = (e) => { S.flashOn = e.target.checked; renderPreview(); };
+$('half').onclick = () => placeBeats(S.period * 2);
+$('dbl').onclick = () => placeBeats(S.period / 2);
+
+/* ---------- export ---------- */
+function showErr(m) { $('err').textContent = m; $('err').hidden = false; }
+function resetResult() {
+  if (S.result) URL.revokeObjectURL($('out').src);
+  S.result = null; $('done').hidden = true; $('out').hidden = true; $('out').removeAttribute('src');
+  if (S.file) { view.hidden = false; $('play').hidden = S.playing; }
+}
+$('go').onclick = () => runExport(false);
+$('small').onclick = () => runExport(true);
+async function runExport(small) {
+  if (!S.file) return;
+  src.pause(); $('err').hidden = true; resetResult();
+  $('go').disabled = $('small').disabled = true; $('progBox').hidden = false; $('progI').style.width = '0%'; $('progT').textContent = 'Hazırlanıyor…';
+  let lock = null; try { lock = await navigator.wakeLock?.request('screen'); } catch {}
+  const t0 = performance.now();
+  try {
+    const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(S.file) });
+    const target = new BufferTarget();
+    const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target });
+    const cv = document.createElement('canvas'); cv.width = 1080; cv.height = 1920;
+    const rr = new Renderer(cv);
+    const vcodec = (await getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: 1080, height: 1920 })) || 'avc';
+    const aac = await canEncodeAudio('aac');
+    // Small copy: plain re-encode at 540x960, bitrate chosen so the file stays near 25 MB (under the 30 MB chat limit).
+    const smallBits = Math.round(Math.min(3e6, Math.max(4e5, 25e6 * 8 / Math.max(1, S.dur) - 128000)));
+    const video = small
+      ? { width: 540, height: 960, fit: 'contain', frameRate: 30, codec: vcodec, bitrate: smallBits, forceTranscode: true }
+      : { width: 1080, height: 1920, fit: 'cover', frameRate: 30, codec: vcodec, quality: QUALITY_HIGH, forceTranscode: true,
+          processedWidth: 1080, processedHeight: 1920,
+          process: (s) => { const vf = s.toVideoFrame(); try { rr.draw(vf, vf.displayWidth, vf.displayHeight, fxAt(s.timestamp), s.timestamp); } finally { vf.close(); } return cv; } };
+    const conv = S.conv = await Conversion.init({
+      input, output, video,
+      audio: aac ? { codec: 'aac', bitrate: small ? 128000 : 256000 } : {},
+    });
+    if (!conv.isValid) throw new Error('Bu video dönüştürülemiyor (' + conv.discardedTracks.map((d) => d.reason).join(', ') + ')');
+    conv.onProgress = (p) => { const el = (performance.now() - t0) / 1000, eta = p > 0.03 ? el / p - el : 0;
+      $('progI').style.width = (p * 100).toFixed(1) + '%';
+      $('progT').textContent = `%${Math.round(p * 100)}` + (eta ? ` · yaklaşık ${Math.ceil(eta)} sn kaldı` : ''); };
+    await conv.execute();
+    const name = S.file.name.replace(/\.[^.]+$/, '') + (small ? '-kucuk.mp4' : '-reels.mp4');
+    S.result = new File([target.buffer], name, { type: 'video/mp4' });
+    const secs = ((performance.now() - t0) / 1000).toFixed(0);
+    $('doneT').textContent = `Hazır: ${(S.result.size / 1e6).toFixed(1)} MB, ${secs} saniyede oluşturuldu.` + (aac ? '' : ' (Uyarı: AAC ses kodlanamadı)') + (vcodec !== 'avc' ? ` (Video: ${vcodec})` : '');
+    $('done').hidden = false; view.hidden = true; $('play').hidden = true;
+    const out = $('out'); out.src = URL.createObjectURL(S.result); out.hidden = false;
+  } catch (e) {
+    if (e?.name === 'ConversionCanceledError' || /cancel/i.test(e?.message || '')) showErr('Render iptal edildi.');
+    else showErr('Render başarısız: ' + (e?.message || e));
+  } finally {
+    S.conv = null; $('progBox').hidden = true; $('go').disabled = $('small').disabled = false; try { await lock?.release(); } catch {}
+  }
+}
+$('cancel').onclick = () => S.conv?.cancel();
+$('back').onclick = () => { resetResult(); renderPreview(); };
+$('dl').onclick = () => { if (!S.result) return; const a = document.createElement('a'); a.href = URL.createObjectURL(S.result); a.download = S.result.name; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000); };
+$('share').onclick = async () => {
+  if (!S.result) return;
+  if (navigator.canShare?.({ files: [S.result] })) { try { await navigator.share({ files: [S.result] }); } catch (e) { if (e.name !== 'AbortError') showErr('Paylaşım açılamadı: ' + e.message); } }
+  else $('dl').click();
+};
+document.addEventListener('visibilitychange', () => { if (document.hidden && S.conv) $('progT').textContent += ' · Safari arka planda, render yavaşlayabilir'; });
