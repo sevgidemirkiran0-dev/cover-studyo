@@ -175,5 +175,5 @@ export function editAt(E, t, power, flash, win = { t0: 0, t1: E.dur, fi: E.fadeI
   let f = 0; const fi = lastLE(E.flashes, t, 't');
   if (fi >= 0 && flash) f = flash * 1.6 * E.flashes[fi].s * env(t - E.flashes[fi].t, 0.1);
   const fade = Math.min(1, win.fi > 0 ? (t - win.t0) / win.fi : 1, win.fo > 0 ? (win.t1 - t) / win.fo : 1);
-  return { z, f, cx: s.cx, cy: s.cy, fade: Math.max(0, fade), kind: s.kind, pe: Math.min(1, pe), ta, dir };
+  return { z, f, cx: s.cx, cy: s.cy, fade: Math.max(0, fade), kind: s.kind, pe: Math.min(1, pe), ta, dir, idx: i };
 }

@@ -2,7 +2,9 @@
 
 iPad Safari'de çalışan, tarayıcı tabanlı cover video düzenleyici. Videolar cihazdan hiç çıkmaz; tüm işlem iPad'in kendi donanımında yapılır.
 
+- Zaman çizelgesi editörü: planları böl/birleştir/kaydır, ortadan parça sil, parmakla kadraj ve zoom, plana özel görünüm/efekt/geçiş/ses, yazı ve emoji (yazı tipi, renk, animasyon), geri al/ileri al
 - Otomatik kurgu: şarkının bölümleri, yüz takibi, sanal kamera açıları (geniş/orta/yakın), otomatik renk düzeltme
+- Ses: seviye, bas/tiz, açılış/kapanış, parça bazında ses
 - Vokal netleştirme (EQ, kompresör, ses seviyesi) ve reverb (Oda, Plate, Salon)
 - Şarkı sözlerini yapay zekâyla çıkarma (Whisper) ve altyazı stilleri (Sade, Kelime kelime, Büyük)
 - "Anlat, düzenlesin": yazılı isteği kurgu ayarlarına çevirme (Claude API anahtarıyla serbest anlatım, anahtarsız basit mod)

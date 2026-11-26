@@ -54,6 +54,8 @@ export async function enhance(buf, opts) {
     comp.threshold.value = -22; comp.knee.value = 8; comp.ratio.value = 3; comp.attack.value = 0.006; comp.release.value = 0.16;
     chain(comp);
   }
+  if (opts.bass) { const b = ctx.createBiquadFilter(); b.type = 'lowshelf'; b.frequency.value = 160; b.gain.value = opts.bass; chain(b); }
+  if (opts.treble) { const b = ctx.createBiquadFilter(); b.type = 'highshelf'; b.frequency.value = 6000; b.gain.value = opts.treble; chain(b); }
   const mix = ctx.createGain(); node.connect(mix);
   if (opts.reverb && opts.reverb !== 'yok' && opts.wet > 0) {
     const conv = ctx.createConvolver(); conv.normalize = true; conv.buffer = impulse(ctx, REVERBS[opts.reverb]);
@@ -106,4 +108,31 @@ export class SyncPlayer {
     s.start(0, Math.max(0, this.v.currentTime)); this.src = s;
   }
   stop() { try { this.src?.stop(); } catch {} this.src = null; }
+}
+
+// Volume automation: master volume, per-shot gains (20 ms ramps), fades at the start/end of the kept video.
+export function mixAudio(buf, { vol = 1, gains = [], fin = 0, fout = 0, t0 = 0, t1 = null }) {
+  const sr = buf.sampleRate, n = buf.length, out = new AudioBuffer({ length: n, numberOfChannels: 2, sampleRate: sr });
+  const env = new Float32Array(n).fill(vol), R = Math.round(0.02 * sr);
+  for (const g of gains) {
+    if (g.gain === 1) continue;
+    const a = Math.max(0, Math.round(g.a * sr)), b = Math.min(n, Math.round(g.b * sr));
+    for (let i = a; i < b; i++) { const ramp = Math.min(1, (i - a) / R, (b - i) / R); env[i] *= 1 + (g.gain - 1) * ramp; }
+  }
+  const e1 = t1 ?? n / sr;
+  if (fin > 0) { const a = Math.round(t0 * sr), L = Math.round(fin * sr); for (let i = 0; i < L && a + i < n; i++) env[a + i] *= i / L; }
+  if (fout > 0) { const b = Math.min(n, Math.round(e1 * sr)), L = Math.round(fout * sr); for (let i = 0; i < L && b - i - 1 >= 0; i++) env[b - i - 1] *= i / L; }
+  for (let c = 0; c < 2; c++) { const s = buf.getChannelData(Math.min(c, buf.numberOfChannels - 1)), d = out.getChannelData(c);
+    for (let i = 0; i < n; i++) { const x = s[i] * env[i]; d[i] = x > 1 ? 1 : x < -1 ? -1 : x; } }
+  return out;
+}
+// Join the kept ranges into one buffer with short crossfades at the joins (no clicks).
+export function joinRanges(buf, ranges) {
+  const sr = buf.sampleRate, parts = ranges.map(([a, b]) => [Math.round(a * sr), Math.round(b * sr)]);
+  const len = parts.reduce((s, [a, b]) => s + (b - a), 0), out = new AudioBuffer({ length: Math.max(1, len), numberOfChannels: 2, sampleRate: sr }), X = Math.round(0.008 * sr);
+  for (let c = 0; c < 2; c++) {
+    const s = buf.getChannelData(Math.min(c, buf.numberOfChannels - 1)), d = out.getChannelData(c); let o = 0;
+    parts.forEach(([a, b], k) => { for (let i = a; i < b; i++, o++) { let g = 1; if (k > 0 && i - a < X) g = (i - a) / X; if (k < parts.length - 1 && b - i < X) g = Math.min(g, (b - i) / X); d[o] = (s[i] || 0) * g; } });
+  }
+  return out;
 }

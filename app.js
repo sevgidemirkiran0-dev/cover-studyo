@@ -1,12 +1,14 @@
 import {
   Input, Output, Conversion, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS,
   AudioBufferSink, QUALITY_HIGH, canEncodeAudio, getFirstEncodableVideoCodec,
+  CanvasSource, AudioBufferSource, VideoSampleSink,
 } from './vendor/mediabunny.min.mjs';
 import { analyzePicture, buildEdit, editAt } from './auto.js';
-import { decodeFull, enhance, swapSample, SyncPlayer } from './audio.js';
+import { decodeFull, enhance, swapSample, SyncPlayer, mixAudio, joinRanges } from './audio.js';
 import { transcribe, drawLyrics } from './lyrics.js';
 import { askClaude, parseLocal, getKey, setKey } from './prompt.js';
 import { analyzeReference, styleToSettings } from './refstyle.js';
+import { initTimeline, drawTexts, keepRanges, skipAt, FONTS } from './timeline.js';
 
 const $ = (id) => document.getElementById(id);
 const S = {
@@ -20,6 +22,7 @@ const S = {
   sharpen: 0.4, pace: 'normal', close: 'normal', trim0: null, trim1: null, fadeIn: 0.45, fadeOut: 1.2,
   fx: { shake: false, rgb: false, glow: false, leak: false, vhs: false, letterbox: false, beauty: false }, fxPower: 0.5, trans: 'kesme',
   ref: null, refOn: false, refAmt: 0.8, targetShot: null,
+  skips: [], texts: [], audioFx: { vol: 1, bass: 0, treble: 0, fin: 0, fout: 0 }, mixed: null,
 };
 
 /* ---------- GPU renderer: colour grade, zoom, flash ---------- */
@@ -34,10 +37,11 @@ uniform vec3 CG, LV; uniform vec2 TX; uniform float SH;
 // CapCut-style effects
 uniform vec2 SO; uniform float SR, RGB, GL, GLOD, LK, LKT, VH, LB, BEA; uniform int TR; uniform float TA; uniform vec2 TD;
 // reference colour transfer
-uniform vec3 XM, XS, UM, US; uniform float XA;
+uniform vec3 XM, XS, UM, US; uniform float XA; uniform int ROT;
 float h(vec2 q){ return fract(sin(dot(q, vec2(12.9898,78.233)))*43758.5453); }
 float lum(vec3 c){ return dot(c, vec3(.2126,.7152,.0722)); }
-vec3 tap(vec2 q){ return texture(T,q).rgb; }
+vec2 rq(vec2 q){ return ROT==90 ? vec2(q.y,1.-q.x) : ROT==180 ? 1.-q : ROT==270 ? vec2(1.-q.y,q.x) : q; }   // frame rotation
+vec3 tap(vec2 q){ return texture(T,rq(q)).rgb; }
 void main(){
   vec2 of = (v-.5)*C/Z;
   float cs = cos(SR), sn = sin(SR); of = vec2(cs*of.x - sn*of.y, sn*of.x + cs*of.y);   // shake rotation
@@ -58,7 +62,7 @@ void main(){
   if (BEA>0.) {                                                                          // skin smoothing
     float cb = -.169*c.r-.331*c.g+.5*c.b, cr = .5*c.r-.419*c.g-.081*c.b;
     float skin = smoothstep(.02,.06,cr)*(1.-smoothstep(.17,.22,cr))*(1.-smoothstep(-.02,.04,cb));
-    c = mix(c, textureLod(T,q,1.6).rgb, BEA*skin);
+    c = mix(c, textureLod(T,rq(q),1.6).rgb, BEA*skin);
   }
   if (XA>0.) c = mix(c, clamp((c-UM)/max(US,vec3(.02))*XS+XM, 0., 1.), XA);             // match reference colours
   else c = pow(clamp((c-LV.x)/(LV.y-LV.x),0.,1.), vec3(LV.z)) * CG;                     // automatic exposure / white balance
@@ -85,7 +89,7 @@ void main(){
   g *= 1.-vig*smoothstep(.25,.85,length(d));
   g += (h(floor(v*R)+TM)-.5)*grain;
   g = mix(c, g, A);
-  if (GL>0.) { vec3 bb = textureLod(T,q,GLOD).rgb; g += max(bb-.55,0.)*GL*2.2; }         // glow / bloom
+  if (GL>0.) { vec3 bb = textureLod(T,rq(q),GLOD).rgb; g += max(bb-.55,0.)*GL*2.2; }         // glow / bloom
   if (LK>0.) {                                                                           // drifting light leak
     vec2 lp = vec2(.15+.25*sin(LKT*.37), .2+.3*sin(LKT*.23+1.));
     float k1 = exp(-6.*dot(v-lp,v-lp)), k2 = exp(-9.*dot(v-vec2(.9,.85+.1*sin(LKT*.5)),v-vec2(.9,.85+.1*sin(LKT*.5))));
@@ -116,9 +120,9 @@ class Renderer {
     const loc = gl.getAttribLocation(pr, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     this.tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, this.tex);
     for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
-    this.u = {}; for (const n of ['C', 'R', 'P', 'Z', 'F', 'A', 'TM', 'D', 'L', 'T', 'CG', 'LV', 'TX', 'SH', 'SO', 'SR', 'RGB', 'GL', 'GLOD', 'LK', 'LKT', 'VH', 'LB', 'BEA', 'TR', 'TA', 'TD', 'XM', 'XS', 'UM', 'US', 'XA']) this.u[n] = gl.getUniformLocation(pr, n);
+    this.u = {}; for (const n of ['C', 'R', 'P', 'Z', 'F', 'A', 'TM', 'D', 'L', 'T', 'CG', 'LV', 'TX', 'SH', 'SO', 'SR', 'RGB', 'GL', 'GLOD', 'LK', 'LKT', 'VH', 'LB', 'BEA', 'TR', 'TA', 'TD', 'XM', 'XS', 'UM', 'US', 'XA', 'ROT']) this.u[n] = gl.getUniformLocation(pr, n);
   }
-  draw(src, sw, sh, fx, t) {
+  draw(src, sw, sh, fx, t, rot = 0) {
     const { gl, u, cv } = this; const W = cv.width, H = cv.height;
     gl.viewport(0, 0, W, H);
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
@@ -132,8 +136,8 @@ class Renderer {
     gl.uniform1f(u.D, fx.fade ?? 1);
     const k = S.correct; gl.uniform3f(u.CG, ...(k ? k.gain : [1, 1, 1])); gl.uniform3f(u.LV, k ? k.bp : 0, k ? k.wp : 1, k ? k.gamma : 1);
     gl.uniform2f(u.R, W / 2, H / 2);
-    gl.uniform1f(u.Z, fx.z); gl.uniform1f(u.F, fx.f); gl.uniform1f(u.A, S.look ? S.amt : 0);
-    gl.uniform1f(u.TM, Math.floor(t * 24) % 97); gl.uniform1i(u.L, S.look); gl.uniform1i(u.T, 0);
+    gl.uniform1f(u.Z, fx.z); gl.uniform1f(u.F, fx.f); gl.uniform1f(u.A, (fx.look ?? S.look) ? S.amt : 0); gl.uniform1i(u.ROT, rot);
+    gl.uniform1f(u.TM, Math.floor(t * 24) % 97); gl.uniform1i(u.L, fx.look ?? S.look); gl.uniform1i(u.T, 0);
     const e = fx.e || {}, X = S.ref && S.refOn && pic ? S.ref.color : null, Ux = pic?.stats;
     gl.uniform2f(u.SO, e.sx || 0, e.sy || 0); gl.uniform1f(u.SR, e.sr || 0); gl.uniform1f(u.RGB, e.rgb || 0);
     gl.uniform1f(u.GL, e.glow || 0); gl.uniform1f(u.GLOD, Math.log2(Math.max(sw, sh) / 48)); gl.uniform1f(u.LK, e.leak || 0); gl.uniform1f(u.LKT, t);
@@ -152,7 +156,10 @@ const punch = (dt, decay) => dt < 0.025 ? dt / 0.025 : Math.exp(-(dt - 0.025) / 
 const TRANS = { kesme: 0, zoom: 1, kaydir: 2, glitch: 3, flas: 4 };
 const noise = (x) => Math.sin(x * 12.9898) * 0.5 + Math.sin(x * 7.233 + 1.7) * 0.3 + Math.sin(x * 3.11 + 4.2) * 0.2;
 function fxAt(t) {
-  const base = baseFx(t), F = S.fx, k = S.fxPower, pe = base.pe || 0, e = {};
+  const base = baseFx(t), sh = S.autoOn && S.edl && base.idx != null ? S.edl.shots[base.idx] : null;
+  const F = sh?.fx || S.fx, k = S.fxPower, pe = base.pe || 0, e = {};
+  if (sh?.look != null) base.look = sh.look;
+  const trans = (base.dir > 0 ? S.edl?.shots[base.idx + 1]?.trans : sh?.trans) ?? S.trans;
   if (F.shake) { const a = (0.0025 + 0.012 * pe) * k * 1.6; e.sx = a * noise(t * 31); e.sy = a * noise(t * 29 + 5); e.sr = a * 0.6 * noise(t * 23 + 9); }
   if (F.rgb) e.rgb = (0.0015 + 0.006 * pe) * k * 1.6;
   if (F.glow) e.glow = 0.5 * k + 0.2;
@@ -160,7 +167,7 @@ function fxAt(t) {
   if (F.vhs) e.vhs = 0.6 * k + 0.4;
   if (F.letterbox) e.lb = 0.1;
   if (F.beauty) e.beauty = 0.35 + 0.4 * k;
-  if (base.ta > 0 && S.trans !== 'kesme') { e.tr = TRANS[S.trans]; e.ta = base.ta * (0.6 + 0.6 * k); e.td = base.dir || 1; }
+  if (base.ta > 0 && trans !== 'kesme') { e.tr = TRANS[trans]; e.ta = base.ta * (0.6 + 0.6 * k); e.td = base.dir || 1; }
   base.e = e; return base;
 }
 function baseFx(t) {
@@ -178,7 +185,7 @@ function baseFx(t) {
 }
 // Mediabunny hands `process` timestamps relative to the trimmed output; add trim start back for effects.
 const TS_SHIFT = 1;
-const win = () => ({ t0: S.trim0 ?? 0, t1: S.trim1 ?? S.dur, fi: S.fadeIn, fo: S.fadeOut });
+const win = () => { const r = keepRanges(S); return { t0: r[0]?.[0] ?? 0, t1: r.at(-1)?.[1] ?? S.dur, fi: S.fadeIn, fo: S.fadeOut }; };
 function rebuildSel() {
   const { beats, barOff } = S;
   S.bars = beats.filter((_, i) => ((i - barOff) % 4 + 4) % 4 === 0);
@@ -294,12 +301,13 @@ function renderPreview() {
   preview.draw(src, src.videoWidth, src.videoHeight, fxAt(src.currentTime), src.currentTime);
   lctx.clearRect(0, 0, lyr.width, lyr.height);
   if (S.lyrOn && S.lyrics.length) drawLyrics(lctx, src.currentTime, lyr.width, lyr.height, S.lyrics, S.lyrStyle);
+  if (S.texts.length) drawTexts(lctx, src.currentTime, lyr.width, lyr.height, S.texts, S.playing ? null : tl?.selectedText());
+  tl?.playhead();
   $('tnow').textContent = fmt(src.currentTime); drawStrip();
 }
 const player = new SyncPlayer(src);
-function loop() { renderPreview(); if (S.playing) requestAnimationFrame(loop); }
+function loop() { const k = skipAt(S, src.currentTime); if (k && S.playing) src.currentTime = k.b; renderPreview(); if (S.playing) requestAnimationFrame(loop); }
 $('play').onclick = () => { src.play(); };
-view.onclick = () => { if (!src.paused) src.pause(); };
 src.ontimeupdate = () => { if (S.playing && S.trim1 != null && src.currentTime >= S.trim1) { src.pause(); src.currentTime = S.trim0 ?? 0; } };
 src.onplay = () => { if (S.trim0 != null && (src.currentTime < S.trim0 - 0.1 || (S.trim1 != null && src.currentTime >= S.trim1))) src.currentTime = S.trim0; S.playing = true; $('play').hidden = true; player.start(); loop(); };
 src.onpause = src.onended = () => { S.playing = false; $('play').hidden = false; player.stop(); renderPreview(); };
@@ -310,7 +318,7 @@ src.onloadeddata = renderPreview;
 async function loadFile(file) {
   if (!file) return;
   resetResult(); S.file = file; S.beats = S.sel = S.bars = []; S.energy = null; S.edl = null; S.correct = null; $('autoOut').innerHTML = '';
-  S.trim0 = S.trim1 = null; S.raw = S.proc = null; S.lyrics = []; player.set(null, false); renderLyricList(); $('lyrGo').disabled = true; $('audioStatus').textContent = ''; $('err').hidden = true;
+  S.trim0 = S.trim1 = null; S.raw = S.proc = S.mixed = null; S.lyrics = []; S.skips = []; S.texts = []; player.set(null, false); renderLyricList(); $('lyrGo').disabled = true; $('audioStatus').textContent = ''; $('err').hidden = true;
   $('empty').hidden = true; view.hidden = false; strip.hidden = false; $('timebar').hidden = false; $('play').hidden = false; $('pInfo').hidden = false;
   if (src.src) URL.revokeObjectURL(src.src);
   src.src = URL.createObjectURL(file); src.load();
@@ -376,7 +384,7 @@ async function runAuto(musicOnly = false) {
     S.correct = pic.correct;
     S.edl = buildEdit({ dur: S.dur, beats: S.beats, barOff: S.barOff, audio, pic, bpm, pace: S.pace, close: S.close, srcH: S.vtrack.displayHeight, targetShot: S.refOn ? S.targetShot : null });
     if (!musicOnly) setLook(S.edl.look);
-    showAuto(); drawStrip();
+    showAuto(); drawStrip(); tl.reset();
     if (src.currentTime < 0.6) src.currentTime = Math.min(1.5, S.dur / 3); else renderPreview();   // skip the fade-in black
     st.textContent = 'Otomatik kurgu hazır. Önizlemeyi oynat ya da doğrudan Reels videosunu oluştur.';
   } catch (e) { st.textContent = 'Otomatik kurgu yapılamadı: ' + e.message; }
@@ -404,7 +412,8 @@ function resetResult() {
   S.result = null; $('done').hidden = true; $('out').hidden = true; $('out').removeAttribute('src');
   if (S.file) { view.hidden = false; $('play').hidden = S.playing; }
 }
-$('go').onclick = () => runExport(false);
+$('go').onclick = () => exportFull();
+$('goTop').onclick = () => { $('go').scrollIntoView({ behavior: 'smooth', block: 'center' }); exportFull(); };
 $('small').onclick = () => runExport(true);
 async function runExport(small) {
   if (!S.file) return;
@@ -472,11 +481,12 @@ async function applyAudio() {
   if (!S.raw) return;
   const job = ++audioJob, st = $('audioStatus');
   const active = S.clarity || (S.reverb !== 'yok' && S.wet > 0);
-  if (!active) { S.proc = null; player.set(null, false); st.textContent = 'Orijinal ses kullanılıyor.'; return; }
+  const A = S.audioFx, eq = A.bass || A.treble;
+  if (!active && !eq) { S.proc = null; remix(); st.textContent = 'Orijinal ses kullanılıyor.'; return; }
   st.textContent = 'Ses işleniyor…';
-  const out = await enhance(S.raw, { clarity: S.clarity, reverb: S.reverb, wet: S.wet });
+  const out = await enhance(S.raw, { clarity: S.clarity, reverb: S.reverb, wet: S.wet, bass: A.bass, treble: A.treble });
   if (job !== audioJob) return;
-  S.proc = out; player.set(S.origAB ? null : out, !S.origAB);
+  S.proc = out; remix();
   st.textContent = (S.clarity ? 'Vokal netleştirildi' : 'Netleştirme kapalı') + (S.reverb !== 'yok' && S.wet > 0 ? `, ${$('rev').querySelector('[aria-pressed=true]').textContent} reverb eklendi.` : '.') + ' Oynatarak dinle.';
 }
 const queueAudio = () => { clearTimeout(audioTimer); audioTimer = setTimeout(applyAudio, 350); };
@@ -484,7 +494,7 @@ $('clarity').onchange = (e) => { S.clarity = e.target.checked; queueAudio(); };
 $('rev').addEventListener('click', (e) => { const b = e.target.closest('[data-rev]'); if (!b) return;
   for (const x of $('rev').querySelectorAll('[data-rev]')) x.setAttribute('aria-pressed', String(x === b)); S.reverb = b.dataset.rev; queueAudio(); });
 $('wet').oninput = (e) => { S.wet = e.target.value / 100; $('wetV').textContent = e.target.value; queueAudio(); };
-$('ab').onclick = () => { S.origAB = !S.origAB; $('ab').textContent = S.origAB ? 'İşlenmiş sesi dinle' : 'Orijinali dinle'; player.set(S.origAB ? null : S.proc, !S.origAB && !!S.proc); };
+$('ab').onclick = () => { S.origAB = !S.origAB; $('ab').textContent = S.origAB ? 'İşlenmiş sesi dinle' : 'Orijinali dinle'; remix(); };
 
 /* ---------- lyrics ---------- */
 function renderLyricList() {
@@ -629,3 +639,109 @@ $('refFile').onchange = async (e) => {
 };
 $('refOn').onchange = async (e) => { S.refOn = e.target.checked; await applyRef(); };
 $('refAmt').oninput = (e) => { S.refAmt = e.target.value / 100; $('refAmtV').textContent = e.target.value; renderPreview(); };
+
+/* ---------- audio mix: volume, per-shot gain, fades ---------- */
+function remix() {
+  const base = S.proc || S.raw; if (!base) return;
+  const A = S.audioFx, gains = (S.edl?.shots || []).filter((s) => s.gain != null && s.gain !== 1).map((s) => ({ a: s.a, b: s.b, gain: s.gain }));
+  const w = win(), plain = !S.proc && A.vol === 1 && !gains.length && !A.fin && !A.fout;
+  S.mixed = plain ? null : mixAudio(base, { vol: A.vol, gains, fin: A.fin, fout: A.fout, t0: w.t0, t1: w.t1 });
+  player.set(S.origAB ? null : S.mixed, !S.origAB && !!S.mixed);
+}
+let remixTimer = 0;
+const queueRemix = () => { clearTimeout(remixTimer); remixTimer = setTimeout(remix, 250); };
+for (const [id, key, f] of [['vol', 'vol', (v) => v / 100], ['bass', 'bass', (v) => +v], ['treble', 'treble', (v) => +v], ['afin', 'fin', (v) => +v], ['afout', 'fout', (v) => +v]]) {
+  $(id).oninput = (e) => { S.audioFx[key] = f(e.target.value); $(id + 'V').textContent = e.target.value; if (key === 'bass' || key === 'treble') queueAudio(); else queueRemix(); };
+}
+
+/* ---------- timeline ---------- */
+const tl = initTimeline({
+  S, $, fmt, render: () => renderPreview(), time: () => src.currentTime,
+  seek: (t) => { src.currentTime = Math.max(0, Math.min(S.dur, t)); },
+  togglePlay: () => { if (src.paused) src.play(); else src.pause(); },
+  cover: () => { const as = (src.videoWidth || 9) / (src.videoHeight || 16), ad = 9 / 16; return [as > ad ? ad / as : 1, as > ad ? 1 : as / ad]; },
+  framing: (kind, s) => {
+    if (kind === 'W') return { kind, z: 1, cx: 0.5, cy: 0.5, drift: 0.03 };
+    const f = pic?.faces?.length ? pic.faces.filter((p) => p.t >= s.a && p.t < s.b) : [];
+    const fx = f.length ? f.reduce((a, p) => a + p.x, 0) / f.length : 0.5, fy = f.length ? f.reduce((a, p) => a + p.y, 0) / f.length : 0.38, fw = f.length ? f.reduce((a, p) => a + p.w, 0) / f.length : 0.22;
+    const zMax = Math.max(1.3, Math.min(2.1, 1.55 * (S.vtrack?.displayHeight || 1920) / 1920));
+    return kind === 'M' ? { kind, z: 1.28, cx: 0.5 + (fx - 0.5) * 0.7, cy: 0.5 + (fy + 0.04 - 0.5) * 0.7, drift: 0.02 }
+      : { kind, z: Math.min(zMax, Math.max(1.3, 0.34 / fw)), cx: fx, cy: fy + 0.04, drift: 0.01 };
+  },
+  onEdit: (audio) => { drawStrip(); renderPreview(); if (audio) queueRemix(); },
+});
+src.addEventListener('loadedmetadata', () => tl.draw());
+new ResizeObserver(() => tl.draw()).observe($('tl'));
+
+/* ---------- full export: kept ranges, per-shot effects, texts, mixed audio ---------- */
+async function exportFull() {
+  if (!S.file || S.conv) return;
+  src.pause(); $('err').hidden = true; resetResult();
+  $('go').disabled = $('small').disabled = true; $('progBox').hidden = false; $('progI').style.width = '0%'; $('progT').textContent = 'Hazırlanıyor…';
+  let lock = null; try { lock = await navigator.wakeLock?.request('screen'); } catch {}
+  const t0 = performance.now(); let cancelled = false; S.conv = { cancel: () => { cancelled = true; } };
+  try {
+    const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(S.file) });
+    const vt = await input.getPrimaryVideoTrack();
+    const ranges = keepRanges(S); if (!ranges.length) throw new Error('Videodan hiçbir parça kalmadı');
+    const total = ranges.reduce((s, [a, b]) => s + b - a, 0);
+    const cv = document.createElement('canvas'); cv.width = 1080; cv.height = 1920; const rr = new Renderer(cv);
+    const comp = document.createElement('canvas'); comp.width = 1080; comp.height = 1920; const cctx = comp.getContext('2d');
+    try { await Promise.all(['800 92px Archivo', '700 64px Inter', '600 54px Inter', ...FONTS.map(([f, w]) => `${w} 60px "${f}"`)].map((f) => document.fonts.load(f))); } catch {}
+    const vcodec = (await getFirstEncodableVideoCodec(['avc', 'hevc', 'vp9', 'av1'], { width: 1080, height: 1920 })) || 'avc';
+    const aac = await canEncodeAudio('aac');
+    const target = new BufferTarget();
+    const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target });
+    const vsrc = new CanvasSource(comp, { codec: vcodec, bitrate: 16e6, keyFrameInterval: 2 });
+    output.addVideoTrack(vsrc, { frameRate: 30 });
+    const abase = S.mixed || S.proc || S.raw;
+    const audio = abase ? joinRanges(abase, ranges) : null;
+    let asrc = null;
+    if (audio) { asrc = new AudioBufferSource({ codec: aac ? 'aac' : 'opus', bitrate: 256000 }); output.addAudioTrack(asrc); }
+    await output.start();
+    const sr = audio?.sampleRate || 48000; let aPos = 0;
+    const feedAudio = async (upTo) => {   // keep audio about a second ahead of the picture
+      while (audio && aPos < audio.length && aPos / sr < upTo + 1) {
+        const n = Math.min(sr, audio.length - aPos), chunk = new AudioBuffer({ length: n, numberOfChannels: 2, sampleRate: sr });
+        for (let c = 0; c < 2; c++) chunk.copyToChannel(audio.getChannelData(c).subarray(aPos, aPos + n), c);
+        await asrc.add(chunk); aPos += n;
+      }
+    };
+    const sink = new VideoSampleSink(vt); let outBase = 0, done = 0;
+    for (const [a, b] of ranges) {
+      let last = -1;
+      for await (const s of sink.samples(a, b)) {
+        if (cancelled) { s.close(); throw new Error('cancel'); }
+        const t = s.timestamp;
+        if (t < a - 0.001 || (last >= 0 && t - last < 1 / 30 - 0.004)) { s.close(); continue; }
+        last = t;
+        const rot = ((s.rotation || 0) % 360 + 360) % 360, vf = s.toVideoFrame();
+        const dw = rot % 180 ? vf.displayHeight : vf.displayWidth, dh = rot % 180 ? vf.displayWidth : vf.displayHeight;
+        try { rr.draw(vf, dw, dh, fxAt(t), t, rot); } finally { vf.close(); s.close(); }
+        cctx.drawImage(cv, 0, 0);
+        if (S.lyrOn && S.lyrics.length) drawLyrics(cctx, t, 1080, 1920, S.lyrics, S.lyrStyle);
+        if (S.texts.length) drawTexts(cctx, t, 1080, 1920, S.texts, null);
+        const ot = outBase + Math.max(0, t - a);
+        await feedAudio(ot);
+        await vsrc.add(ot, 1 / 30);
+        done = ot;
+        const p = done / total, el = (performance.now() - t0) / 1000, eta = p > 0.03 ? el / p - el : 0;
+        $('progI').style.width = (p * 100).toFixed(1) + '%';
+        $('progT').textContent = `%${Math.round(p * 100)}` + (eta ? ` · yaklaşık ${Math.ceil(eta)} sn kaldı` : '');
+      }
+      outBase += b - a;
+    }
+    await feedAudio(1e9);
+    await output.finalize();
+    const name = S.file.name.replace(/\.[^.]+$/, '') + '-reels.mp4';
+    S.result = new File([target.buffer], name, { type: 'video/mp4' });
+    const secs = ((performance.now() - t0) / 1000).toFixed(0);
+    $('doneT').textContent = `Hazır: ${(S.result.size / 1e6).toFixed(1)} MB, ${Math.round(total)} sn video, ${secs} saniyede oluşturuldu.` + (aac ? '' : ' (Uyarı: AAC ses kodlanamadı)') + (vcodec !== 'avc' ? ` (Video: ${vcodec})` : '');
+    $('done').hidden = false; view.hidden = true; $('play').hidden = true;
+    const out = $('out'); out.src = URL.createObjectURL(S.result); out.hidden = false;
+  } catch (e) {
+    showErr(/cancel/i.test(e?.message || '') ? 'Render iptal edildi.' : 'Render başarısız: ' + (e?.message || e));
+  } finally {
+    S.conv = null; $('progBox').hidden = true; $('go').disabled = $('small').disabled = false; try { await lock?.release(); } catch {}
+  }
+}
