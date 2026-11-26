@@ -65,10 +65,11 @@ input[type=range]{width:100%;accent-color:var(--red);height:32px}
 .tempo{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .tempo b{font:800 30px/1 Archivo,sans-serif;font-variant-numeric:tabular-nums}
 .small{min-height:36px;padding:4px 12px;font-size:14px}
+.auto{border-color:var(--red)}
 </style>
 </head>
 <body>
-<header><h1>Cover Stüdyo</h1><small id="hdr">Faz 1 · Reels 1080×1920</small></header>
+<header><h1>Cover Stüdyo</h1><small id="hdr">Otomatik kurgu · Reels 1080×1920</small></header>
 <main>
   <section class="stage">
     <div class="screen" id="screen">
@@ -92,6 +93,13 @@ input[type=range]{width:100%;accent-color:var(--red);height:32px}
       <dl class="kv" id="info" style="margin-top:10px"></dl>
     </div>
 
+    <div class="panel auto">
+      <div class="row" style="justify-content:space-between"><h2 style="margin:0">Otomatik kurgu</h2><input type="checkbox" id="autoOn" checked aria-label="Otomatik kurguyu aç/kapat" style="width:24px;height:24px;accent-color:var(--red)"></div>
+      <p style="margin-top:8px" id="autoStatus">Video seçince tamamı analiz edilir: şarkının bölümleri, yüzün yeri, ışık ve renk. Ardından kamera açıları, zoom, flaş ve geçişler otomatik kurgulanır.</p>
+      <dl class="kv" id="autoOut"></dl>
+      <div class="row" style="margin-top:12px"><button class="ghost small" id="autoGo" disabled>Yeniden analiz et</button><span class="muted">Şerit: <span style="color:#5d6d7e">■</span> geniş <span style="color:#2fc2b5">■</span> orta <span style="color:#e0475e">■</span> yakın</span></div>
+    </div>
+
     <div class="panel">
       <h2>Görünüm</h2>
       <div class="looks" id="looks">
@@ -107,7 +115,7 @@ input[type=range]{width:100%;accent-color:var(--red);height:32px}
       <div class="tempo"><b id="bpm">–</b><span class="muted" id="bpmTxt">Video seçilince tempo bulunur</span></div>
       <div class="row" style="margin-top:8px"><button class="ghost small" id="half" disabled>Yarı tempo</button><button class="ghost small" id="dbl" disabled>Çift tempo</button></div>
       <div class="tog"><span>Vuruşta zoom</span><input type="checkbox" id="zoomOn" checked></div>
-      <div class="chips" id="every">
+      <div class="chips" id="every" style="opacity:.4" title="Otomatik kurgu açıkken kullanılmaz">
         <button class="chip" data-every="1" aria-pressed="false">Her vuruş</button>
         <button class="chip" data-every="2" aria-pressed="true">2 vuruşta bir</button>
         <button class="chip" data-every="4" aria-pressed="false">Ölçü başı</button>

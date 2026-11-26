@@ -2,6 +2,7 @@ import {
   Input, Output, Conversion, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS,
   AudioBufferSink, QUALITY_HIGH, canEncodeAudio, getFirstEncodableVideoCodec,
 } from './vendor/mediabunny.min.mjs';
+import { analyzePicture, buildEdit, editAt } from './auto.js';
 
 const $ = (id) => document.getElementById(id);
 const S = {
@@ -9,6 +10,7 @@ const S = {
   zoomOn: true, every: 2, power: 0.45, flashOn: true, flash: 0.4,
   beats: [], period: 0, phase: 0, barOff: 0, fps: 0, onset: null, energy: null,
   sel: [], bars: [], result: null, conv: null, playing: false,
+  autoOn: true, edl: null, correct: null, vtrack: null,
 };
 
 /* ---------- GPU renderer: colour grade, zoom, flash ---------- */
@@ -18,12 +20,15 @@ void main(){ v = p*.5+.5; gl_Position = vec4(p,0.,1.); }`;
 const FS = `#version 300 es
 precision highp float;
 in vec2 v; out vec4 o;
-uniform sampler2D T; uniform vec2 C, R; uniform float Z, F, A, TM; uniform int L;
+uniform sampler2D T; uniform vec2 C, R, P; uniform float Z, F, A, TM, D; uniform int L;
+uniform vec3 CG, LV;
 float h(vec2 q){ return fract(sin(dot(q, vec2(12.9898,78.233)))*43758.5453); }
 float lum(vec3 c){ return dot(c, vec3(.2126,.7152,.0722)); }
 void main(){
-  vec2 q = (v-.5)/Z*C+.5; q.y = 1.-q.y;
-  vec3 c = texture(T,q).rgb, g = c;
+  vec2 of = (v-.5)*C/Z; vec2 q = vec2(P.x+of.x, P.y-of.y);
+  vec3 c = texture(T,q).rgb;
+  c = pow(clamp((c-LV.x)/(LV.y-LV.x),0.,1.), vec3(LV.z)) * CG;   // automatic exposure / white balance
+  vec3 g = c;
   float vig = 0., grain = 0.;
   if (L==1) {            // Alternatif Rock
     g = mix(vec3(lum(c)), c, .6);
@@ -47,7 +52,7 @@ void main(){
   g += (h(floor(v*R)+TM)-.5)*grain;
   g = mix(c, g, A);
   g += F*vec3(1.,.93,.85)*.45;
-  o = vec4(clamp(g,0.,1.),1.);
+  o = vec4(clamp(g,0.,1.)*D,1.);
 }`;
 
 class Renderer {
@@ -65,15 +70,19 @@ class Renderer {
     const loc = gl.getAttribLocation(pr, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     this.tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, this.tex);
     for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
-    this.u = {}; for (const n of ['C', 'R', 'Z', 'F', 'A', 'TM', 'L', 'T']) this.u[n] = gl.getUniformLocation(pr, n);
+    this.u = {}; for (const n of ['C', 'R', 'P', 'Z', 'F', 'A', 'TM', 'D', 'L', 'T', 'CG', 'LV']) this.u[n] = gl.getUniformLocation(pr, n);
   }
   draw(src, sw, sh, fx, t) {
     const { gl, u, cv } = this; const W = cv.width, H = cv.height;
     gl.viewport(0, 0, W, H);
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
-    const as = sw / sh, ad = W / H;
-    gl.uniform2f(u.C, as > ad ? ad / as : 1, as > ad ? 1 : as / ad);
+    const as = sw / sh, ad = W / H, cx = as > ad ? ad / as : 1, cy = as > ad ? 1 : as / ad;
+    gl.uniform2f(u.C, cx, cy);
+    const hx = 0.5 * cx / fx.z, hy = 0.5 * cy / fx.z, cl = (x, h) => Math.min(1 - h, Math.max(h, x));
+    gl.uniform2f(u.P, cl(fx.cx ?? 0.5, hx), cl(fx.cy ?? 0.5, hy));
+    gl.uniform1f(u.D, fx.fade ?? 1);
+    const k = S.correct; gl.uniform3f(u.CG, ...(k ? k.gain : [1, 1, 1])); gl.uniform3f(u.LV, k ? k.bp : 0, k ? k.wp : 1, k ? k.gamma : 1);
     gl.uniform2f(u.R, W / 2, H / 2);
     gl.uniform1f(u.Z, fx.z); gl.uniform1f(u.F, fx.f); gl.uniform1f(u.A, S.look ? S.amt : 0);
     gl.uniform1f(u.TM, Math.floor(t * 24) % 97); gl.uniform1i(u.L, S.look); gl.uniform1i(u.T, 0);
@@ -86,6 +95,7 @@ const lastLE = (a, t) => { let lo = 0, hi = a.length - 1, r = -1; while (lo <= h
 const energyAt = (t) => S.energy ? S.energy[Math.min(S.energy.length - 1, Math.max(0, Math.round(t * S.fps)))] : 0.7;
 const punch = (dt, decay) => dt < 0.025 ? dt / 0.025 : Math.exp(-(dt - 0.025) / decay);
 function fxAt(t) {
+  if (S.autoOn && S.edl) return editAt(S.edl, t, S.zoomOn ? S.power : 0, S.flashOn ? S.flash : 0);
   let z = 1 + 0.025 * (S.dur ? Math.min(1, t / S.dur) : 0), f = 0;
   if (S.zoomOn && S.sel.length) {
     const i = lastLE(S.sel, t);
@@ -142,8 +152,10 @@ async function analyzeAudio(track) {
   const fps = fs / hop;
   const W = Math.round(fps * 0.5), onset = new Float32Array(frames); let sum = 0;
   for (let i = 0; i < frames; i++) { sum += flux[i]; if (i >= W) sum -= flux[i - W]; onset[i] = Math.max(0, flux[i] - sum / Math.min(i + 1, W)); }
-  const E = Math.round(fps * 2), energy = new Float32Array(frames); sum = 0;
-  for (let i = 0; i < frames; i++) { sum += rms[i]; if (i >= E) sum -= rms[i - E]; energy[i] = sum / Math.min(i + 1, E); }
+  // centred 2 s moving average, so section changes are not detected late
+  const E = Math.round(fps), energy = new Float32Array(frames), pre = new Float64Array(frames + 1);
+  for (let i = 0; i < frames; i++) pre[i + 1] = pre[i] + rms[i];
+  for (let i = 0; i < frames; i++) { const a = Math.max(0, i - E), b = Math.min(frames, i + E + 1); energy[i] = (pre[b] - pre[a]) / (b - a); }
   const sorted = Array.from(energy).sort((p, q) => p - q), hi = sorted[Math.floor(sorted.length * 0.95)] || 1, lo = sorted[Math.floor(sorted.length * 0.1)] || 0;
   for (let i = 0; i < frames; i++) energy[i] = Math.min(1, Math.max(0, (energy[i] - lo) / (hi - lo || 1)));
   return { fps, onset, energy };
@@ -186,6 +198,10 @@ function drawStrip() {
   if (S.energy) { c.fillStyle = '#3a2f33'; c.beginPath(); c.moveTo(0, H);
     const n = S.energy.length; for (let x = 0; x <= W; x += 2) { const e = S.energy[Math.min(n - 1, Math.floor(x / W * n))]; c.lineTo(x, H - 6 - e * (H - 14)); }
     c.lineTo(W, H); c.fill(); }
+  if (S.autoOn && S.edl) {
+    const col = { W: '#5d6d7e', M: '#2fc2b5', C: '#e0475e' };
+    for (const s of S.edl.shots) { c.fillStyle = col[s.kind]; c.fillRect(s.a / d * W + dpr, 0, Math.max(dpr, (s.b - s.a) / d * W - 2 * dpr), H * 0.16); }
+  }
   c.fillStyle = '#8a7c81'; for (const t of S.sel) c.fillRect(t / d * W, H * 0.55, dpr, H * 0.45);
   c.fillStyle = '#e0475e'; for (const t of S.bars) c.fillRect(t / d * W - dpr / 2, H * 0.2, 2 * dpr, H * 0.8);
   const v = $('src'); c.fillStyle = '#fff'; c.fillRect(v.currentTime / d * W - dpr, 0, 2 * dpr, H);
@@ -213,7 +229,7 @@ src.onloadeddata = renderPreview;
 /* ---------- load a file ---------- */
 async function loadFile(file) {
   if (!file) return;
-  resetResult(); S.file = file; S.beats = S.sel = S.bars = []; S.energy = null; $('err').hidden = true;
+  resetResult(); S.file = file; S.beats = S.sel = S.bars = []; S.energy = null; S.edl = null; S.correct = null; $('autoOut').innerHTML = ''; $('err').hidden = true;
   $('empty').hidden = true; view.hidden = false; strip.hidden = false; $('timebar').hidden = false; $('play').hidden = false; $('pInfo').hidden = false;
   if (src.src) URL.revokeObjectURL(src.src);
   src.src = URL.createObjectURL(file); src.load();
@@ -223,6 +239,7 @@ async function loadFile(file) {
     const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
     const [vt, at] = [await input.getPrimaryVideoTrack(), await input.getPrimaryAudioTrack()];
     if (!vt) throw new Error('Bu dosyada video bulunamadı');
+    S.vtrack = vt;
     S.dur = await input.computeDuration(); $('tdur').textContent = fmt(S.dur);
     const vw = vt.displayWidth, vh = vt.displayHeight;
     const info = { Dosya: file.name, Boyut: (file.size / 1e6).toFixed(0) + ' MB', Çözünürlük: `${vw}×${vh}`, Süre: fmt(S.dur), Codec: (vt.codec || '?').toUpperCase(), Ses: at ? 'Var' : 'Yok' };
@@ -236,6 +253,7 @@ async function loadFile(file) {
       else { $('bpm').textContent = '–'; $('bpmTxt').textContent = 'Video çok kısa, ritim bulunamadı'; }
     } else { $('bpm').textContent = '–'; $('bpmTxt').textContent = 'Videoda ses yok'; }
     renderPreview();
+    if (S.autoOn && S.file === file) await runAuto();
   } catch (e) { showErr('Video okunamadı: ' + e.message); }
 }
 $('file').onchange = (e) => loadFile(e.target.files[0]);
@@ -248,8 +266,48 @@ pressGroup($('looks'), 'data-look', 'look'); pressGroup($('every'), 'data-every'
 for (const [id, key] of [['amt', 'amt'], ['power', 'power'], ['flash', 'flash']]) $(id).oninput = (e) => { S[key] = e.target.value / 100; $(id + 'V').textContent = e.target.value; renderPreview(); };
 $('zoomOn').onchange = (e) => { S.zoomOn = e.target.checked; renderPreview(); };
 $('flashOn').onchange = (e) => { S.flashOn = e.target.checked; renderPreview(); };
-$('half').onclick = () => placeBeats(S.period * 2);
-$('dbl').onclick = () => placeBeats(S.period / 2);
+$('half').onclick = async () => { placeBeats(S.period * 2); if (S.autoOn) await runAuto(true); };
+$('dbl').onclick = async () => { placeBeats(S.period / 2); if (S.autoOn) await runAuto(true); };
+
+/* ---------- automatic edit ---------- */
+let pic = null, autoBusy = false;
+const fmtS = (t) => `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}`;
+function setLook(l) { S.look = l; for (const x of $('looks').querySelectorAll('[data-look]')) x.setAttribute('aria-pressed', String(+x.dataset.look === l)); }
+async function runAuto(musicOnly = false) {
+  if (!S.file || autoBusy) return; autoBusy = true;
+  const file = S.file, st = $('autoStatus'); $('autoGo').disabled = true; $('go').disabled = true;
+  try {
+    if (!musicOnly || !pic) {
+      st.textContent = 'Görüntü analiz ediliyor: yüz, ışık, renk…'; pic = null;
+      pic = await analyzePicture(S.vtrack, S.dur, (p) => { st.textContent = `Görüntü analiz ediliyor… %${Math.round(p * 100)}`; });
+      if (S.file !== file) return;
+    }
+    st.textContent = 'Kurgu planı hazırlanıyor…';
+    const audio = S.energy ? { energy: S.energy, fps: S.fps } : { energy: new Float32Array(Math.ceil(S.dur * 10)).fill(0.6), fps: 10 };
+    const bpm = S.period ? 60 * S.fps / S.period : 0;
+    S.correct = pic.correct;
+    S.edl = buildEdit({ dur: S.dur, beats: S.beats, barOff: S.barOff, audio, pic, bpm });
+    if (!musicOnly) setLook(S.edl.look);
+    showAuto(); drawStrip();
+    if (src.currentTime < 0.6) src.currentTime = Math.min(1.5, S.dur / 3); else renderPreview();   // skip the fade-in black
+    st.textContent = 'Otomatik kurgu hazır. Önizlemeyi oynat ya da doğrudan Reels videosunu oluştur.';
+  } catch (e) { st.textContent = 'Otomatik kurgu yapılamadı: ' + e.message; }
+  finally { autoBusy = false; $('autoGo').disabled = false; $('go').disabled = !S.file; }
+}
+function showAuto() {
+  const E = S.edl, box = $('autoOut'); box.innerHTML = '';
+  const cnt = { W: 0, M: 0, C: 0 }; E.shots.forEach((s) => cnt[s.kind]++);
+  const rows = [
+    ['Bölümler', E.secs.map((s) => `${s.name} ${fmtS(s.a)}`).join(' · ')],
+    ['Kamera açıları', `${E.shots.length} plan: ${cnt.W} geniş, ${cnt.M} orta, ${cnt.C} yakın`],
+    ['Yüz takibi', E.hasFace ? `Yüz bulundu (%${Math.round(pic.faceRate * 100)} karede)` : 'Yüz bulunamadı, kadraj ortada'],
+    ['Renk düzeltme', `Pozlama ve beyaz dengesi ayarlandı`],
+    ['Görünüm', E.look === 1 ? 'Alternatif Rock (enerjik şarkı)' : 'Sinematik (sakin şarkı)'],
+  ];
+  for (const [k, v] of rows) { const dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = k; dd.textContent = v; box.append(dt, dd); }
+}
+$('autoGo').onclick = () => runAuto();
+$('autoOn').onchange = (e) => { S.autoOn = e.target.checked; $('every').style.opacity = S.autoOn ? 0.4 : 1; if (S.autoOn && !S.edl) runAuto(); drawStrip(); renderPreview(); };
 
 /* ---------- export ---------- */
 function showErr(m) { $('err').textContent = m; $('err').hidden = false; }
@@ -278,7 +336,7 @@ async function runExport(small) {
     const smallBits = Math.round(Math.min(3e6, Math.max(4e5, 25e6 * 8 / Math.max(1, S.dur) - 128000)));
     const video = small
       ? { width: 540, height: 960, fit: 'contain', frameRate: 30, codec: vcodec, bitrate: smallBits, forceTranscode: true }
-      : { width: 1080, height: 1920, fit: 'cover', frameRate: 30, codec: vcodec, quality: QUALITY_HIGH, forceTranscode: true,
+      : { frameRate: 30, codec: vcodec, quality: QUALITY_HIGH, forceTranscode: true, allowTransformationMetadata: false,
           processedWidth: 1080, processedHeight: 1920,
           process: (s) => { const vf = s.toVideoFrame(); try { rr.draw(vf, vf.displayWidth, vf.displayHeight, fxAt(s.timestamp), s.timestamp); } finally { vf.close(); } return cv; } };
     const conv = S.conv = await Conversion.init({
