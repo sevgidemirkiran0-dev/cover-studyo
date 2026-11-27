@@ -626,8 +626,37 @@ async function applyRef() {
   } else S.targetShot = null;
   if (S.file && S.autoOn) await runAuto(true); else renderPreview();
 }
-$('refFile').onchange = async (e) => {
-  const f = e.target.files[0]; if (!f) return; const st = $('refStatus');
+$('refFile').onchange = (e) => { const f = e.target.files[0]; if (f) useReference(f); };
+/* reference by link: direct video links are downloaded; social links get step-by-step help */
+const SOCIAL = [
+  [/instagram\.com\/(reel|reels|p|tv)\//i, 'Instagram', "Instagram'da aç ↗", ['Aşağıdaki bağlantıyla Reels\'i Instagram\'da aç.', 'Paylaş (✈) düğmesine dokun, menüde <b>İndir</b> seçeneği varsa ona bas; video Fotoğraflar\'a kaydedilir. İndir yoksa Denetim Merkezi\'nden <b>ekran kaydı</b> al.', 'Cover Stüdyo\'ya dön ve <b>Referans video seç</b> ile o videoyu seç.']],
+  [/tiktok\.com\//i, 'TikTok', "TikTok'ta aç ↗", ['Videoyu TikTok\'ta aç.', 'Paylaş → <b>Videoyu kaydet</b> ile Fotoğraflar\'a kaydet (ya da ekran kaydı al).', '<b>Referans video seç</b> ile o videoyu seç.']],
+  [/(youtube\.com|youtu\.be)\//i, 'YouTube', "YouTube'da aç ↗", ['Videoyu YouTube\'da aç.', 'Denetim Merkezi\'nden <b>ekran kaydı</b> al (YouTube indirmeye izin vermiyor).', '<b>Referans video seç</b> ile kaydı seç.']],
+];
+$('refGo').onclick = async () => {
+  const raw = $('refUrl').value.trim(), help = $('refHelp'), st = $('refStatus'); help.hidden = true;
+  if (!raw) return;
+  let url; try { url = new URL(raw.startsWith('http') ? raw : 'https://' + raw); } catch { st.textContent = 'Bu bir bağlantıya benzemiyor.'; return; }
+  const soc = SOCIAL.find(([re]) => re.test(url.href));
+  const showHelp = (label, steps, why) => {
+    const a = document.createElement('a'); a.href = url.href; a.target = '_blank'; a.rel = 'noopener'; a.textContent = label;
+    help.innerHTML = `<b>${why}</b><ol>${steps.map((x) => `<li>${x}</li>`).join('')}</ol>`; help.append(a); help.hidden = false; st.textContent = '';
+  };
+  if (soc) return showHelp(soc[2], soc[3], `${soc[1]} videoları bağlantıdan doğrudan alınamıyor (${soc[1]} izin vermiyor). En hızlı yol:`);
+  st.textContent = 'Video indiriliyor…';
+  try {
+    const res = await fetch(url.href); if (!res.ok) throw new Error('HTTP ' + res.status);
+    const type = res.headers.get('content-type') || '';
+    if (!/video|octet-stream|mp4|quicktime/.test(type)) throw new Error('bağlantı bir video dosyası değil');
+    const blob = await res.blob();
+    await useReference(new File([blob], url.pathname.split('/').pop() || 'referans.mp4', { type: type.split(';')[0] }));
+  } catch (er) {
+    showHelp('Bağlantıyı aç ↗', ['Bağlantıyı aç ve videoyu iPad\'e kaydet (ya da ekran kaydı al).', '<b>Referans video seç</b> ile o videoyu seç.'], `Bu bağlantıdan video alınamadı (${er.message === 'Failed to fetch' || er.name === 'TypeError' ? 'site dışarıdan indirmeye izin vermiyor' : er.message}).`);
+  }
+};
+$('refUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('refGo').click(); } });
+async function useReference(f) {
+  const st = $('refStatus'); $('refHelp').hidden = true;
   st.textContent = 'Referans video inceleniyor…';
   try {
     const r = await analyzeReference(f, (x) => { st.textContent = `Referans video inceleniyor… %${Math.round(x * 100)}`; });
@@ -636,7 +665,7 @@ $('refFile').onchange = async (e) => {
     st.textContent = 'Referanstan öğrenilenler: ' + summary + '.' + (S.file ? '' : ' Şimdi kendi videonu seç, bu stil uygulanacak.');
     await applyRef();
   } catch (er) { st.textContent = 'Referans incelenemedi: ' + er.message; }
-};
+}
 $('refOn').onchange = async (e) => { S.refOn = e.target.checked; await applyRef(); };
 $('refAmt').oninput = (e) => { S.refAmt = e.target.value / 100; $('refAmtV').textContent = e.target.value; renderPreview(); };
 

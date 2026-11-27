@@ -67,6 +67,9 @@ input[type=range]{width:100%;accent-color:var(--red);height:32px}
 .small{min-height:36px;padding:4px 12px;font-size:14px}
 .auto{border-color:var(--red)}
 .edit{border-color:#4dd2ff}
+.note2{margin-top:10px;padding:12px 14px;border-radius:10px;background:#2a2225;border-left:4px solid #ffd23f;font-size:15px}
+.note2 ol{margin:6px 0 8px;padding-left:1.3em}.note2 li{margin-bottom:4px}
+.note2 a{color:#ffd23f}
 .tl{position:relative;overflow-x:auto;overflow-y:hidden;margin-top:10px;background:#0f0c0d;border-radius:10px;-webkit-overflow-scrolling:touch}
 .tlin{position:relative;height:124px}
 .lanes{position:absolute;inset:0}
@@ -205,8 +208,10 @@ select{font:16px Inter,sans-serif;min-height:44px;padding:8px 10px;border-radius
 
     <div class="panel">
       <h2>Referans videoyu taklit et</h2>
-      <p>Beğendiğin bir Reels'i seç; kesme hızı, flaşlar, kamera hareketi, sinema bantları ve renkleri senin videona uygulanır. Instagram bağlantıları uygulamada açılamıyor: videoyu ekran kaydıyla ya da indirerek iPad'e kaydet, sonra buradan seç.</p>
-      <label class="pick">Referans video seç<input type="file" id="refFile" accept="video/*,.mov,.mp4"></label>
+      <p>Beğendiğin bir Reels'in bağlantısını yapıştır ya da videosunu seç; kesme hızı, flaşlar, kamera hareketi, sinema bantları ve renkleri senin videona uygulanır.</p>
+      <div class="askrow"><input type="url" id="refUrl" placeholder="Reels / video bağlantısını yapıştır" autocomplete="off" style="font:16px Inter,sans-serif;padding:10px;border-radius:10px;border:2px solid var(--line);background:#181315;color:var(--ink);width:100%;min-height:44px"><button id="refGo">Getir</button></div>
+      <div id="refHelp" class="note2" hidden></div>
+      <div class="row" style="margin-top:10px"><span class="muted">ya da</span><label class="pick">Referans video seç<input type="file" id="refFile" accept="video/*,.mov,.mp4"></label></div>
       <p class="muted" id="refStatus" style="margin-top:10px"></p>
       <div id="refOpts" hidden>
         <div class="tog"><span>Referans stilini kullan</span><input type="checkbox" id="refOn" checked></div>
